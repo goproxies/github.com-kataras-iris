@@ -579,7 +579,7 @@ var (
 	// A shortcut for the `context#CookieEncoding`.
 	CookieEncoding = context.CookieEncoding
 
-	// IsErrPath can be used at `context#ReadForm`.
+	// IsErrPath can be used at `context#ReadForm` and `context#ReadQuery`.
 	// It reports whether the incoming error is type of `formbinder.ErrPath`,
 	// which can be ignored when server allows unknown post values to be sent by the client.
 	//
@@ -748,6 +748,9 @@ var RegisterOnInterrupt = host.RegisterOnInterrupt
 // Shutdown gracefully terminates all the application's server hosts and any tunnels.
 // Returns an error on the first failure, otherwise nil.
 func (app *Application) Shutdown(ctx stdContext.Context) error {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
 	for i, su := range app.Hosts {
 		app.logger.Debugf("Host[%d]: Shutdown now", i)
 		if err := su.Shutdown(ctx); err != nil {
@@ -1239,7 +1242,7 @@ func (app *Application) tryStartTunneling() {
 				app.config.vhost = publicAddr[strings.Index(publicAddr, "://")+3:]
 
 				directLog := []byte(fmt.Sprintf("• Public Address: %s\n", publicAddr))
-				app.Logger().Printer.Output.Write(directLog)
+				app.Logger().Printer.Write(directLog)
 			}
 		})
 	})
