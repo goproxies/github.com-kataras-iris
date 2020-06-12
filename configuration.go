@@ -354,15 +354,18 @@ func WithPostMaxMemory(limit int64) Configurator {
 // that the client may sent.
 //
 // Defaults to an empty map but an example usage is:
-// WithRemoteAddrHeader("X-Forwarded-For")
+// WithRemoteAddrHeader("X-Forwarded-For", "CF-Connecting-IP")
 //
 // Look `context.RemoteAddr()` for more.
-func WithRemoteAddrHeader(headerName string) Configurator {
+func WithRemoteAddrHeader(header ...string) Configurator {
 	return func(app *Application) {
 		if app.config.RemoteAddrHeaders == nil {
 			app.config.RemoteAddrHeaders = make(map[string]bool)
 		}
-		app.config.RemoteAddrHeaders[headerName] = true
+
+		for _, k := range header {
+			app.config.RemoteAddrHeaders[k] = true
+		}
 	}
 }
 
@@ -389,9 +392,36 @@ func WithoutRemoteAddrHeader(headerName string) Configurator {
 func WithRemoteAddrPrivateSubnet(startIP, endIP string) Configurator {
 	return func(app *Application) {
 		app.config.RemoteAddrPrivateSubnets = append(app.config.RemoteAddrPrivateSubnets, netutil.IPRange{
-			Start: net.IP(startIP),
-			End:   net.IP(endIP),
+			Start: net.ParseIP(startIP),
+			End:   net.ParseIP(endIP),
 		})
+	}
+}
+
+// WithSSLProxyHeader sets a SSLProxyHeaders key value pair.
+// Example: WithSSLProxyHeader("X-Forwarded-Proto", "https").
+// See `Context.IsSSL` for more.
+func WithSSLProxyHeader(headerKey, headerValue string) Configurator {
+	return func(app *Application) {
+		if app.config.SSLProxyHeaders == nil {
+			app.config.SSLProxyHeaders = make(map[string]string)
+		}
+
+		app.config.SSLProxyHeaders[headerKey] = headerValue
+	}
+}
+
+// WithHostProxyHeader sets a HostProxyHeaders key value pair.
+// Example: WithHostProxyHeader("X-Host").
+// See `Context.Host` for more.
+func WithHostProxyHeader(headers ...string) Configurator {
+	return func(app *Application) {
+		if app.config.HostProxyHeaders == nil {
+			app.config.HostProxyHeaders = make(map[string]bool)
+		}
+		for _, k := range headers {
+			app.config.HostProxyHeaders[k] = true
+		}
 	}
 }
 
@@ -867,7 +897,7 @@ type Configuration struct {
 	// context.UnmarshalBody/ReadJSON/ReadXML will be not consumed.
 	DisableBodyConsumptionOnUnmarshal bool `json:"disableBodyConsumptionOnUnmarshal,omitempty" yaml:"DisableBodyConsumptionOnUnmarshal" toml:"DisableBodyConsumptionOnUnmarshal"`
 	// FireEmptyFormError returns if set to tue true then the `context.ReadBody/ReadForm`
-	//  will return an `iris.ErrEmptyForm` on empty request form data.
+	// will return an `iris.ErrEmptyForm` on empty request form data.
 	FireEmptyFormError bool `json:"fireEmptyFormError,omitempty" yaml:"FireEmptyFormError" yaml:"FireEmptyFormError"`
 
 	// TimeFormat time format for any kind of datetime parsing
@@ -943,219 +973,183 @@ type Configuration struct {
 	//
 	// Look `context.RemoteAddr()` for more.
 	RemoteAddrHeaders map[string]bool `json:"remoteAddrHeaders,omitempty" yaml:"RemoteAddrHeaders" toml:"RemoteAddrHeaders"`
-
 	// RemoteAddrPrivateSubnets defines the private sub-networks.
 	// They are used to be compared against
-	// IP Addresses fetched through `RemoteAddrHeaders` or `Request.RemoteAddr`.
+	// IP Addresses fetched through `RemoteAddrHeaders` or `Context.Request.RemoteAddr`.
 	// For details please navigate through: https://github.com/kataras/iris/issues/1453
-	// Defaults to an empty slice, usage:
+	// Defaults to:
+	// {
+	// 	Start: net.ParseIP("10.0.0.0"),
+	// 	End:   net.ParseIP("10.255.255.255"),
+	// },
+	// {
+	// 	Start: net.ParseIP("100.64.0.0"),
+	// 	End:   net.ParseIP("100.127.255.255"),
+	// },
+	// {
+	// 	Start: net.ParseIP("172.16.0.0"),
+	// 	End:   net.ParseIP("172.31.255.255"),
+	// },
+	// {
+	// 	Start: net.ParseIP("192.0.0.0"),
+	// 	End:   net.ParseIP("192.0.0.255"),
+	// },
+	// {
+	// 	Start: net.ParseIP("192.168.0.0"),
+	// 	End:   net.ParseIP("192.168.255.255"),
+	// },
+	// {
+	// 	Start: net.ParseIP("198.18.0.0"),
+	// 	End:   net.ParseIP("198.19.255.255"),
+	// }
 	//
-	// RemoteAddrPrivateSubnets {
-	//	{Start: "10.0.0.0", End: "10.255.255.255"},
-	//  {Start: "100.64.0.0", End: "100.127.255.255"},
-	//	}
-	//
-	// Look `context.RemoteAddr()` for more.
+	// Look `Context.RemoteAddr()` for more.
 	RemoteAddrPrivateSubnets []netutil.IPRange `json:"remoteAddrPrivateSubnets" yaml:"RemoteAddrPrivateSubnets" toml:"RemoteAddrPrivateSubnets"`
+	// SSLProxyHeaders defines the set of header key values
+	// that would indicate a valid https Request (look `Context.IsSSL()`).
+	// Example: `map[string]string{"X-Forwarded-Proto": "https"}`.
+	//
+	// Defaults to empty map.
+	SSLProxyHeaders map[string]string `json:"sslProxyHeaders" yaml:"SSLProxyHeaders" toml:"SSLProxyHeaders"`
+	// HostProxyHeaders defines the set of headers that may hold a proxied hostname value for the clients.
+	// Look `Context.Host()` for more.
+	// Defaults to empty map.
+	HostProxyHeaders map[string]bool `json:"hostProxyHeaders" yaml:"HostProxyHeaders" toml:"HostProxyHeaders"`
 	// Other are the custom, dynamic options, can be empty.
 	// This field used only by you to set any app's options you want.
 	//
-	// Defaults to a non-nil empty map.
+	// Defaults to empty map.
 	Other map[string]interface{} `json:"other,omitempty" yaml:"Other" toml:"Other"`
 }
 
 var _ context.ConfigurationReadOnly = &Configuration{}
 
 // GetVHost returns the non-exported vhost config field.
-//
-// If original addr ended with :443 or :80, it will return the host without the port.
-// If original addr was :https or :http, it will return localhost.
-// If original addr was 0.0.0.0, it will return localhost.
 func (c Configuration) GetVHost() string {
 	return c.vhost
 }
 
-// GetLogLevel returns the `Configuration.LogLevel` field.
-// The same (as `golog.LogLevel`) can be retrieved through `app.Logger().Level`.
+// GetLogLevel returns the LogLevel field.
 func (c Configuration) GetLogLevel() string {
 	return c.vhost
 }
 
-// GetDisablePathCorrection returns the Configuration#DisablePathCorrection.
-// DisablePathCorrection disables the correcting
-// and redirecting or executing directly the handler of
-// the requested path to the registered path
-// for example, if /home/ path is requested but no handler for this Route found,
-// then the Router checks if /home handler exists, if yes,
-// (permanent)redirects the client to the correct path /home.
+// GetDisablePathCorrection returns the DisablePathCorrection field.
 func (c Configuration) GetDisablePathCorrection() bool {
 	return c.DisablePathCorrection
 }
 
-// GetDisablePathCorrectionRedirection returns the Configuration.DisablePathCorrectionRedirection field.
-// If DisablePathCorrectionRedirection set to true then it will fire the handler of the matching route without
-// the last slash ("/") instead of send a redirection status.
+// GetDisablePathCorrectionRedirection returns the DisablePathCorrectionRedirection field.
 func (c Configuration) GetDisablePathCorrectionRedirection() bool {
 	return c.DisablePathCorrectionRedirection
 }
 
-// GetEnablePathIntelligence returns the Configuration.EnablePathIntelligence field.
+// GetEnablePathIntelligence returns the EnablePathIntelligence field.
 func (c Configuration) GetEnablePathIntelligence() bool {
 	return c.EnablePathIntelligence
 }
 
-// GetEnablePathEscape is the Configuration.EnablePathEscape,
-// returns true when its escapes the path, the named parameters (if any).
+// GetEnablePathEscape returns the EnablePathEscape field.
 func (c Configuration) GetEnablePathEscape() bool {
 	return c.EnablePathEscape
 }
 
-// GetForceLowercaseRouting returns the value of the Configuration.ForceLowercaseRouting setting.
+// GetForceLowercaseRouting returns the ForceLowercaseRouting field.
 func (c Configuration) GetForceLowercaseRouting() bool {
 	return c.ForceLowercaseRouting
 }
 
-// GetFireMethodNotAllowed returns the Configuration.FireMethodNotAllowed.
+// GetFireMethodNotAllowed returns the FireMethodNotAllowed field.
 func (c Configuration) GetFireMethodNotAllowed() bool {
 	return c.FireMethodNotAllowed
 }
 
-// GetEnableOptimizations returns whether
-// the application has performance optimizations enabled.
+// GetEnableOptimizations returns the EnableOptimizations.
 func (c Configuration) GetEnableOptimizations() bool {
 	return c.EnableOptimizations
 }
 
-// GetDisableBodyConsumptionOnUnmarshal returns the Configuration#GetDisableBodyConsumptionOnUnmarshal,
-// manages the reading behavior of the context's body readers/binders.
-// If returns true then the body consumption by the `context.UnmarshalBody/ReadJSON/ReadXML`
-// is disabled.
-//
-// By-default io.ReadAll` is used to read the body from the `context.Request.Body which is an `io.ReadCloser`,
-// if this field set to true then a new buffer will be created to read from and the request body.
-// The body will not be changed and existing data before the
-// context.UnmarshalBody/ReadJSON/ReadXML will be not consumed.
+// GetDisableBodyConsumptionOnUnmarshal returns the DisableBodyConsumptionOnUnmarshal field.
 func (c Configuration) GetDisableBodyConsumptionOnUnmarshal() bool {
 	return c.DisableBodyConsumptionOnUnmarshal
 }
 
-// GetFireEmptyFormError returns the Configuration.FireEmptyFormError value.
-// If true then the `context.ReadBody/ReadForm` will return an `iris.ErrEmptyForm`
-// on empty request form data.
+// GetFireEmptyFormError returns the DisableBodyConsumptionOnUnmarshal field.
 func (c Configuration) GetFireEmptyFormError() bool {
-	return c.DisableBodyConsumptionOnUnmarshal
+	return c.FireEmptyFormError
 }
 
-// GetDisableAutoFireStatusCode returns the Configuration.DisableAutoFireStatusCode.
-// Returns true when the http error status code handler automatic execution turned off.
+// GetDisableAutoFireStatusCode returns the DisableAutoFireStatusCode field.
 func (c Configuration) GetDisableAutoFireStatusCode() bool {
 	return c.DisableAutoFireStatusCode
 }
 
-// GetResetOnFireErrorCode returns the Configuration.ResetOnFireErrorCode.
-// Returns true when the router should not respect the handler's error response and
-// fire the registered error handler instead.
-//
-// See https://github.com/kataras/iris/issues/1531
+// GetResetOnFireErrorCode returns ResetOnFireErrorCode field.
 func (c Configuration) GetResetOnFireErrorCode() bool {
 	return c.ResetOnFireErrorCode
 }
 
-// GetTimeFormat returns the Configuration.TimeFormat,
-// format for any kind of datetime parsing.
+// GetTimeFormat returns the TimeFormat field.
 func (c Configuration) GetTimeFormat() string {
 	return c.TimeFormat
 }
 
-// GetCharset returns the Configuration.Charset,
-// the character encoding for various rendering
-// used for templates and the rest of the responses.
+// GetCharset returns the Charset field.
 func (c Configuration) GetCharset() string {
 	return c.Charset
 }
 
-// GetPostMaxMemory returns the maximum configured post data size
-// that a client can send to the server, this differs
-// from the overral request body size which can be modified
-// by the `context#SetMaxRequestBodySize` or `iris#LimitRequestBodySize`.
-//
-// Defaults to 32MB or 32 << 20 if you prefer.
+// GetPostMaxMemory returns the PostMaxMemory field.
 func (c Configuration) GetPostMaxMemory() int64 {
 	return c.PostMaxMemory
 }
 
-// GetLocaleContextKey returns the configuration's LocaleContextKey value,
-// used for i18n.
+// GetLocaleContextKey returns the LocaleContextKey field.
 func (c Configuration) GetLocaleContextKey() string {
 	return c.LocaleContextKey
 }
 
-// GetLanguageContextKey returns the configuration's LanguageContextKey value,
-// used for i18n.
+// GetLanguageContextKey returns the LanguageContextKey field.
 func (c Configuration) GetLanguageContextKey() string {
 	return c.LanguageContextKey
 }
 
-// GetVersionContextKey returns the configuration's VersionContextKey value,
-// used for API Versioning.
+// GetVersionContextKey returns the VersionContextKey field.
 func (c Configuration) GetVersionContextKey() string {
 	return c.VersionContextKey
 }
 
-// GetViewLayoutContextKey returns the key of the context's user values' key
-// which is being used to set the template
-// layout from a middleware or the main handler.
-// Overrides the parent's or the configuration's.
+// GetViewLayoutContextKey returns the ViewLayoutContextKey field.
 func (c Configuration) GetViewLayoutContextKey() string {
 	return c.ViewLayoutContextKey
 }
 
-// GetViewDataContextKey returns the key of the context's user values' key
-// which is being used to set the template
-// binding data from a middleware or the main handler.
+// GetViewDataContextKey returns the ViewDataContextKey field.
 func (c Configuration) GetViewDataContextKey() string {
 	return c.ViewDataContextKey
 }
 
-// GetRemoteAddrHeaders returns the allowed request headers names
-// that can be valid to parse the client's IP based on.
-// By-default no "X-" header is consired safe to be used for retrieving the
-// client's IP address, because those headers can manually change by
-// the client. But sometimes are useful e.g., when behind a proxy
-// you want to enable the "X-Forwarded-For" or when cloudflare
-// you want to enable the "CF-Connecting-IP", inneed you
-// can allow the `ctx.RemoteAddr()` to use any header
-// that the client may sent.
-//
-// Defaults to an empty map but an example usage is:
-// RemoteAddrHeaders {
-//	"X-Real-Ip":             true,
-//  "X-Forwarded-For":       true,
-// 	"CF-Connecting-IP": 	 true,
-//	}
-//
-// Look `context.RemoteAddr()` for more.
+// GetRemoteAddrHeaders returns the RemoteAddrHeaders field.
 func (c Configuration) GetRemoteAddrHeaders() map[string]bool {
 	return c.RemoteAddrHeaders
 }
 
-// GetRemoteAddrPrivateSubnets returns the configuration's private sub-networks.
-// They are used to be compared against
-// IP Addresses fetched through `RemoteAddrHeaders` or `Request.RemoteAddr`.
-// For details please navigate through: https://github.com/kataras/iris/issues/1453
-// Defaults to an empty slice, usage:
-//
-// RemoteAddrPrivateSubnets {
-//	{Start: "10.0.0.0", End: "10.255.255.255"},
-//  {Start: "100.64.0.0", End: "100.127.255.255"},
-//	}
-//
-// Look `context.RemoteAddr()` for more.
+// GetSSLProxyHeaders returns the SSLProxyHeaders field.
+func (c Configuration) GetSSLProxyHeaders() map[string]string {
+	return c.SSLProxyHeaders
+}
+
+// GetRemoteAddrPrivateSubnets returns the RemoteAddrPrivateSubnets field.
 func (c Configuration) GetRemoteAddrPrivateSubnets() []netutil.IPRange {
 	return c.RemoteAddrPrivateSubnets
 }
 
-// GetOther returns the Configuration#Other map.
+// GetHostProxyHeaders returns the HostProxyHeaders field.
+func (c Configuration) GetHostProxyHeaders() map[string]bool {
+	return c.HostProxyHeaders
+}
+
+// GetOther returns the Other field.
 func (c Configuration) GetOther() map[string]interface{} {
 	return c.Other
 }
@@ -1281,6 +1275,24 @@ func WithConfiguration(c Configuration) Configurator {
 			main.RemoteAddrPrivateSubnets = v
 		}
 
+		if v := c.SSLProxyHeaders; len(v) > 0 {
+			if main.SSLProxyHeaders == nil {
+				main.SSLProxyHeaders = make(map[string]string, len(v))
+			}
+			for key, value := range v {
+				main.SSLProxyHeaders[key] = value
+			}
+		}
+
+		if v := c.HostProxyHeaders; len(v) > 0 {
+			if main.HostProxyHeaders == nil {
+				main.HostProxyHeaders = make(map[string]bool, len(v))
+			}
+			for key, value := range v {
+				main.HostProxyHeaders[key] = value
+			}
+		}
+
 		if v := c.Other; len(v) > 0 {
 			if main.Other == nil {
 				main.Other = make(map[string]interface{}, len(v))
@@ -1313,15 +1325,42 @@ func DefaultConfiguration() Configuration {
 		// The request body the size limit
 		// can be set by the middleware `LimitRequestBodySize`
 		// or `context#SetMaxRequestBodySize`.
-		PostMaxMemory:            32 << 20, // 32MB
-		LocaleContextKey:         "iris.locale",
-		LanguageContextKey:       "iris.locale.language",
-		VersionContextKey:        "iris.api.version",
-		ViewLayoutContextKey:     "iris.viewLayout",
-		ViewDataContextKey:       "iris.viewData",
-		RemoteAddrHeaders:        make(map[string]bool),
-		RemoteAddrPrivateSubnets: []netutil.IPRange{},
-		EnableOptimizations:      false,
-		Other:                    make(map[string]interface{}),
+		PostMaxMemory:        32 << 20, // 32MB
+		LocaleContextKey:     "iris.locale",
+		LanguageContextKey:   "iris.locale.language",
+		VersionContextKey:    "iris.api.version",
+		ViewLayoutContextKey: "iris.viewLayout",
+		ViewDataContextKey:   "iris.viewData",
+		RemoteAddrHeaders:    make(map[string]bool),
+		RemoteAddrPrivateSubnets: []netutil.IPRange{
+			{
+				Start: net.ParseIP("10.0.0.0"),
+				End:   net.ParseIP("10.255.255.255"),
+			},
+			{
+				Start: net.ParseIP("100.64.0.0"),
+				End:   net.ParseIP("100.127.255.255"),
+			},
+			{
+				Start: net.ParseIP("172.16.0.0"),
+				End:   net.ParseIP("172.31.255.255"),
+			},
+			{
+				Start: net.ParseIP("192.0.0.0"),
+				End:   net.ParseIP("192.0.0.255"),
+			},
+			{
+				Start: net.ParseIP("192.168.0.0"),
+				End:   net.ParseIP("192.168.255.255"),
+			},
+			{
+				Start: net.ParseIP("198.18.0.0"),
+				End:   net.ParseIP("198.19.255.255"),
+			},
+		},
+		SSLProxyHeaders:     make(map[string]string),
+		HostProxyHeaders:    make(map[string]bool),
+		EnableOptimizations: false,
+		Other:               make(map[string]interface{}),
 	}
 }

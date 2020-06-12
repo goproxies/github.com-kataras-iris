@@ -346,6 +346,7 @@ type Context interface {
 	// based on the 'escape'.
 	RequestPath(escape bool) string
 	// Host returns the host part of the current url.
+	// This method makes use of the `Configuration.HostProxyHeaders` field too.
 	Host() string
 	// Subdomain returns the subdomain of this request, if any.
 	// Note that this is a fast method which does not cover all cases.
@@ -400,8 +401,14 @@ type Context interface {
 	IsMobile() bool
 	// IsScript reports whether a client is a script.
 	IsScript() bool
+	// IsSSL reports whether the client is running under HTTPS SSL.
+	//
+	// See `IsHTTP2` too.
+	IsSSL() bool
 	// IsHTTP2 reports whether the protocol version for incoming request was HTTP/2.
 	// The client code always uses either HTTP/1.1 or HTTP/2.
+	//
+	// See `IsSSL` too.
 	IsHTTP2() bool
 	// IsGRPC reports whether the request came from a gRPC client.
 	IsGRPC() bool
@@ -1807,7 +1814,18 @@ func (ctx *context) RequestPath(escape bool) string {
 // } no, it will not work because map is a random peek data structure.
 
 // Host returns the host part of the current URI.
+// This method makes use of the `Configuration.HostProxyHeaders` field too.
 func (ctx *context) Host() string {
+	for header, ok := range ctx.app.ConfigurationReadOnly().GetHostProxyHeaders() {
+		if !ok {
+			continue
+		}
+
+		if host := ctx.GetHeader(header); host != "" {
+			return host
+		}
+	}
+
 	return GetHost(ctx.request)
 }
 
@@ -1978,10 +1996,28 @@ func (ctx *context) IsScript() bool {
 	return isScriptRegex.MatchString(s)
 }
 
+// IsSSL reports whether the client is running under HTTPS SSL.
+//
+// See `IsHTTP2` too.
+func (ctx *context) IsSSL() bool {
+	ssl := strings.EqualFold(ctx.request.URL.Scheme, "https") || ctx.request.TLS != nil
+	if !ssl {
+		for k, v := range ctx.app.ConfigurationReadOnly().GetSSLProxyHeaders() {
+			if ctx.GetHeader(k) == v {
+				ssl = true
+				break
+			}
+		}
+	}
+	return ssl
+}
+
 // IsHTTP2 reports whether the protocol version for incoming request was HTTP/2.
 // The client code always uses either HTTP/1.1 or HTTP/2.
+//
+// See `IsSSL` too.
 func (ctx *context) IsHTTP2() bool {
-	return ctx.Request().ProtoMajor == 2
+	return ctx.request.ProtoMajor == 2
 }
 
 // IsGRPC reports whether the request came from a gRPC client.
