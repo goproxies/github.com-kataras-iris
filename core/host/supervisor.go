@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/crypto/acme/autocert"
-
 	"github.com/kataras/iris/v12/core/netutil"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // Configurator provides an easy way to modify
@@ -48,6 +48,9 @@ type Supervisor struct {
 	// Defaults to empty.
 	IgnoredErrors []string
 	onErr         []func(error)
+
+	// See `iris.Configuration.SocketSharding`.
+	SocketSharding bool
 }
 
 // New returns a new host supervisor
@@ -124,8 +127,8 @@ func (su *Supervisor) newListener() (net.Listener, error) {
 	// restarts we may want for the server.
 	//
 	// User still be able to call .Serve instead.
-	// l, err := netutil.TCPKeepAlive(su.Server.Addr)
-	l, err := netutil.TCP(su.Server.Addr)
+	// l, err := netutil.TCPKeepAlive(su.Server.Addr, su.SocketReuse)
+	l, err := netutil.TCP(su.Server.Addr, su.SocketSharding)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +370,13 @@ func (su *Supervisor) runTLS(getCertificate func(*tls.ClientHelloInfo) (*tls.Cer
 			defer cancel()
 			http1RedirectServer.Shutdown(ctx)
 		})
-		go http1RedirectServer.ListenAndServe()
+
+		ln, err := netutil.TCP(":http", su.SocketSharding)
+		if err != nil {
+			return err
+		}
+
+		go http1RedirectServer.Serve(ln)
 	}
 
 	if su.Server.TLSConfig == nil {
@@ -395,13 +404,18 @@ func (su *Supervisor) runTLS(getCertificate func(*tls.ClientHelloInfo) (*tls.Cer
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
 				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-				tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+				// tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA, G402: TLS Bad Cipher Suite
 				0xC028, /* TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 */
 			},
 		}
 	}
 
-	return su.supervise(func() error { return su.Server.ListenAndServeTLS("", "") })
+	ln, err := netutil.TCP(su.Server.Addr, su.SocketSharding)
+	if err != nil {
+		return err
+	}
+
+	return su.supervise(func() error { return su.Server.ServeTLS(ln, "", "") })
 }
 
 // RegisterOnShutdown registers a function to call on Shutdown.

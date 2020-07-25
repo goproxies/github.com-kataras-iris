@@ -176,7 +176,7 @@ func getBindingsFor(inputs []reflect.Type, deps []*Dependency, paramsCount int) 
 				// wrap the existing dependency handler.
 				paramHandler := paramDependencyHandler(getParamIndex())
 				prevHandler := d.Handle
-				d.Handle = func(ctx context.Context, input *Input) (reflect.Value, error) {
+				d.Handle = func(ctx *context.Context, input *Input) (reflect.Value, error) {
 					v, err := paramHandler(ctx, input)
 					if err != nil {
 						v, err = prevHandler(ctx, input)
@@ -209,7 +209,7 @@ func getBindingsFor(inputs []reflect.Type, deps []*Dependency, paramsCount int) 
 			}
 
 			// else add builtin bindings that may be registered by user too, but they didn't.
-			if indirectType(in).Kind() == reflect.Struct {
+			if isPayloadType(in) {
 				bindings = append(bindings, payloadBinding(i, in))
 				continue
 			}
@@ -217,6 +217,15 @@ func getBindingsFor(inputs []reflect.Type, deps []*Dependency, paramsCount int) 
 	}
 
 	return
+}
+
+func isPayloadType(in reflect.Type) bool {
+	switch indirectType(in).Kind() {
+	case reflect.Struct, reflect.Slice, reflect.Ptr:
+		return true
+	default:
+		return false
+	}
 }
 
 func getBindingsForFunc(fn reflect.Value, dependencies []*Dependency, paramsCount int) []*binding {
@@ -256,7 +265,7 @@ func getBindingsForStruct(v reflect.Value, dependencies []*Dependency, paramsCou
 		})
 	}
 
-	fields := lookupFields(elem, true, true, nil)
+	fields, stateless := lookupFields(elem, true, true, nil)
 	n := len(fields)
 
 	if n > 1 && sorter != nil {
@@ -267,19 +276,28 @@ func getBindingsForStruct(v reflect.Value, dependencies []*Dependency, paramsCou
 
 	inputs := make([]reflect.Type, n)
 	for i := 0; i < n; i++ {
-		//	fmt.Printf("Controller [%s] | Field Index: %v | Field Type: %s\n", typ, fields[i].Index, fields[i].Type)
+		// fmt.Printf("Controller [%s] | Field Index: %v | Field Type: %s\n", typ, fields[i].Index, fields[i].Type)
 		inputs[i] = fields[i].Type
 	}
-	exportedBindings := getBindingsFor(inputs, dependencies, paramsCount)
 
-	// fmt.Printf("Controller [%s] Inputs length: %d vs Bindings length: %d\n", typ, n, len(exportedBindings))
-	if len(nonZero) >= len(exportedBindings) { // if all are fields are defined then just return.
+	exportedBindings := getBindingsFor(inputs, dependencies, paramsCount)
+	// fmt.Printf("Controller [%s] | Inputs length: %d vs Bindings length: %d | NonZero: %d | Stateless : %d\n",
+	// 	typ, n, len(exportedBindings), len(nonZero), stateless)
+	// for i, b := range exportedBindings {
+	// 	fmt.Printf("[%d] [Static=%v] %#+v\n", i, b.Dependency.Static, b.Dependency.OriginalValue)
+	// }
+
+	if stateless == 0 && len(nonZero) >= len(exportedBindings) {
+		// if we have not a single stateless and fields are defined then just return.
+		// Note(@kataras): this can accept further improvements.
 		return
 	}
 
 	// get declared bindings from deps.
 	bindings = append(bindings, exportedBindings...)
 	for _, binding := range bindings {
+		// fmt.Printf(""Controller [%s] | Binding: %s\n", typ, binding.String())
+
 		if len(binding.Input.StructFieldIndex) == 0 {
 			// set correctly the input's field index.
 			structFieldIndex := fields[binding.Input.Index].Index
@@ -287,8 +305,7 @@ func getBindingsForStruct(v reflect.Value, dependencies []*Dependency, paramsCou
 		}
 
 		// fmt.Printf("Controller [%s] | binding Index: %v | binding Type: %s\n", typ, binding.Input.StructFieldIndex, binding.Input.Type)
-
-		// fmt.Printf("Controller [%s] Set [%s] to struct field index: %v\n", typ.String(), binding.Input.Type.String(), structFieldIndex)
+		// fmt.Printf("Controller [%s] Set [%s] to struct field index: %v\n", typ.String(), binding.Input.Type.String(), binding.Input.StructFieldIndex)
 	}
 
 	return
@@ -306,7 +323,7 @@ func paramBinding(index, paramIndex int, typ reflect.Type) *binding {
 }
 
 func paramDependencyHandler(paramIndex int) DependencyHandler {
-	return func(ctx context.Context, input *Input) (reflect.Value, error) {
+	return func(ctx *context.Context, input *Input) (reflect.Value, error) {
 		if ctx.Params().Len() <= paramIndex {
 			return emptyValue, ErrSeeOther
 		}
@@ -316,11 +333,14 @@ func paramDependencyHandler(paramIndex int) DependencyHandler {
 }
 
 // registered if input parameters are more than matched dependencies.
-// It binds an input to a request body based on the request content-type header (JSON, XML, YAML, Query, Form).
+// It binds an input to a request body based on the request content-type header
+// (JSON, Protobuf, Msgpack, XML, YAML, Query, Form).
 func payloadBinding(index int, typ reflect.Type) *binding {
+	// fmt.Printf("Register payload binding for index: %d and type: %s\n", index, typ.String())
+
 	return &binding{
 		Dependency: &Dependency{
-			Handle: func(ctx context.Context, input *Input) (newValue reflect.Value, err error) {
+			Handle: func(ctx *context.Context, input *Input) (newValue reflect.Value, err error) {
 				wasPtr := input.Type.Kind() == reflect.Ptr
 
 				if serveDepsV := ctx.Values().Get(context.DependenciesContextKey); serveDepsV != nil {
@@ -331,9 +351,15 @@ func payloadBinding(index int, typ reflect.Type) *binding {
 					}
 				}
 
-				newValue = reflect.New(indirectType(input.Type))
+				if input.Type.Kind() == reflect.Slice {
+					newValue = reflect.New(reflect.SliceOf(indirectType(input.Type)))
+				} else {
+					newValue = reflect.New(indirectType(input.Type))
+				}
+
 				ptr := newValue.Interface()
 				err = ctx.ReadBody(ptr)
+
 				if !wasPtr {
 					newValue = newValue.Elem()
 				}

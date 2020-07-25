@@ -15,8 +15,8 @@ import (
 // completed by the end controller then the BeginRequest and EndRequest
 // are called between the controller's method responsible for the incoming request.
 type BaseController interface {
-	BeginRequest(context.Context)
-	EndRequest(context.Context)
+	BeginRequest(*context.Context)
+	EndRequest(*context.Context)
 }
 
 type shared interface {
@@ -78,6 +78,12 @@ type ControllerActivator struct {
 	// End-devs can change some properties of the *Route on the `BeforeActivator` by using the
 	// `GetRoute/GetRoutes(functionName)`.
 	routes map[string][]*router.Route
+	// BeginHandlers is a slice of middleware for this controller.
+	// These handlers will be prependend to each one of
+	// the route that this controller will register(Handle/HandleMany/struct methods)
+	// to the targeted Party.
+	// Look the `Use` method too.
+	BeginHandlers context.Handlers
 
 	// true if this controller listens and serves to websocket events.
 	servesWebsocket bool
@@ -199,6 +205,15 @@ func (c *ControllerActivator) GetRoutes(methodName string) []*router.Route {
 	return nil
 }
 
+// Use registers a middleware for this Controller.
+// It appends one or more handlers to the `BeginHandlers`.
+// It's like the `Party.Use` but specifically
+// for the routes that this controller will register to the targeted `Party`.
+func (c *ControllerActivator) Use(handlers ...context.Handler) *ControllerActivator {
+	c.BeginHandlers = append(c.BeginHandlers, handlers...)
+	return c
+}
+
 // Singleton returns new if all incoming clients' requests
 // have the same controller instance.
 // This is done automatically by iris to reduce the creation
@@ -230,6 +245,18 @@ func (c *ControllerActivator) isReservedMethod(name string) bool {
 	for methodName := range c.routes {
 		if methodName == name {
 			return true
+		}
+	}
+
+	return false
+}
+
+func (c *ControllerActivator) isReservedMethodHandler(method, path string) bool {
+	for _, routes := range c.routes {
+		for _, r := range routes {
+			if r.Method == method && r.Path == path {
+				return true
+			}
 		}
 	}
 
@@ -296,8 +323,10 @@ func (c *ControllerActivator) addErr(err error) bool {
 // Just like `Party#Handle`, it returns the `*router.Route`, if failed
 // then it logs the errors and it returns nil, you can check the errors
 // programmatically by the `Party#GetReporter`.
+//
+// Handle will add a route to the "funcName".
 func (c *ControllerActivator) Handle(method, path, funcName string, middleware ...context.Handler) *router.Route {
-	routes := c.HandleMany(method, path, funcName, middleware...)
+	routes := c.handleMany(method, path, funcName, false, middleware...)
 	if len(routes) == 0 {
 		return nil
 	}
@@ -315,19 +344,21 @@ func (c *ControllerActivator) Handle(method, path, funcName string, middleware .
 // func (*Controller) BeforeActivation(b mvc.BeforeActivation) {
 // 	b.HandleMany("GET", "/path /path1" /path2", "HandlePath")
 // }
+// HandleMany will override any routes of this "funcName".
 func (c *ControllerActivator) HandleMany(method, path, funcName string, middleware ...context.Handler) []*router.Route {
 	return c.handleMany(method, path, funcName, true, middleware...)
 }
 
 func (c *ControllerActivator) handleMany(method, path, funcName string, override bool, middleware ...context.Handler) []*router.Route {
 	if method == "" || path == "" || funcName == "" ||
-		c.isReservedMethod(funcName) {
+		(c.isReservedMethod(funcName) && c.isReservedMethodHandler(method, path)) {
 		// isReservedMethod -> if it's already registered
 		// by a previous Handle or analyze methods internally.
 		return nil
 	}
 
 	handler := c.handlerOf(path, funcName)
+	middleware = context.JoinHandlers(c.BeginHandlers, middleware)
 
 	// register the handler now.
 	routes := c.app.Router.HandleMany(method, path, append(middleware, handler)...)
@@ -369,14 +400,18 @@ func (c *ControllerActivator) handlerOf(relPath, methodName string) context.Hand
 	handler := c.injector.MethodHandler(methodName, paramsCount)
 
 	if isBaseController(c.Type) {
-		return func(ctx context.Context) {
+		return func(ctx *context.Context) {
 			ctrl, err := c.injector.Acquire(ctx)
 			if err != nil {
 				// if err != hero.ErrStopExecution {
 				// 	c.injector.Container.GetErrorHandler(ctx).HandleError(ctx, err)
 				// }
 				c.injector.Container.GetErrorHandler(ctx).HandleError(ctx, err)
-				return
+				// allow skipping struct field bindings
+				// errors by a custom error handler.
+				if ctx.IsStopped() {
+					return
+				}
 			}
 
 			b := ctrl.Interface().(BaseController)

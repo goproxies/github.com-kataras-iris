@@ -34,11 +34,13 @@ type GRPC struct {
 	Strict bool
 }
 
+var _ Option = GRPC{}
+
 // Apply parses the controller's methods and registers gRPC handlers to the application.
 func (g GRPC) Apply(c *ControllerActivator) {
 	defer c.Activated()
 
-	pre := func(ctx context.Context) {
+	pre := func(ctx *context.Context) {
 		if ctx.IsGRPC() { // gRPC, consumes and produces protobuf.
 			g.Server.ServeHTTP(ctx.ResponseWriter(), ctx.Request())
 			ctx.StopExecution()

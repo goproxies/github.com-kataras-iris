@@ -51,13 +51,7 @@ type Route struct {
 	RegisterFileName   string `json:"registerFileName"`
 	RegisterLineNumber int    `json:"registerLineNumber"`
 
-	// StaticSites if not empty, refers to the system (or virtual if embedded) directory
-	// and sub directories that this "GET" route was registered to serve files and folders
-	// that contain index.html (a site). The index handler may registered by other
-	// route, manually or automatic by the framework,
-	// get the route by `Application#GetRouteByPath(staticSite.RequestPath)`.
-	StaticSites []context.StaticSite `json:"staticSites"`
-	topLink     *Route
+	topLink *Route
 
 	// Sitemap properties: https://www.sitemaps.org/protocol.html
 	LastMod    time.Time `json:"lastMod,omitempty"`
@@ -66,6 +60,9 @@ type Route struct {
 
 	// ReadOnly is the read-only structure of the Route.
 	ReadOnly context.RouteReadOnly
+
+	// OnBuild runs right before BuildHandlers.
+	OnBuild func(r *Route)
 }
 
 // NewRoute returns a new route based on its method,
@@ -186,6 +183,10 @@ func (r *Route) RestoreStatus() bool {
 // at the `Application#Build` state. Do not call it manually, unless
 // you were defined your own request mux handler.
 func (r *Route) BuildHandlers() {
+	if r.OnBuild != nil {
+		r.OnBuild(r)
+	}
+
 	if len(r.beginHandlers) > 0 {
 		r.Handlers = append(r.beginHandlers, r.Handlers...)
 		r.beginHandlers = r.beginHandlers[0:0]
@@ -512,10 +513,6 @@ func (rd routeReadOnlyWrapper) MainHandlerName() string {
 
 func (rd routeReadOnlyWrapper) MainHandlerIndex() int {
 	return rd.Route.MainHandlerIndex
-}
-
-func (rd routeReadOnlyWrapper) StaticSites() []context.StaticSite {
-	return rd.Route.StaticSites
 }
 
 func (rd routeReadOnlyWrapper) GetLastMod() time.Time {

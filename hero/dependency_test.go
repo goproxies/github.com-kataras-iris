@@ -25,54 +25,54 @@ func TestDependency(t *testing.T) {
 			Expected:   struct{ Name string }{"name"},
 		},
 		{
-			Dependency: func(context.Context, *Input) (reflect.Value, error) {
+			Dependency: func(*context.Context, *Input) (reflect.Value, error) {
 				return reflect.ValueOf(42), nil
 			},
 			Expected: 42,
 		},
 		{
-			Dependency: DependencyHandler(func(context.Context, *Input) (reflect.Value, error) {
+			Dependency: DependencyHandler(func(*context.Context, *Input) (reflect.Value, error) {
 				return reflect.ValueOf(255), nil
 			}),
 			Expected: 255,
 		},
 		{
-			Dependency: func(context.Context) (reflect.Value, error) {
+			Dependency: func(*context.Context) (reflect.Value, error) {
 				return reflect.ValueOf("OK without Input"), nil
 			},
 			Expected: "OK without Input",
 		},
 		{
 
-			Dependency: func(context.Context, ...string) (reflect.Value, error) {
+			Dependency: func(*context.Context, ...string) (reflect.Value, error) {
 				return reflect.ValueOf("OK variadic ignored"), nil
 			},
 			Expected: "OK variadic ignored",
 		},
 		{
 
-			Dependency: func(context.Context) reflect.Value {
+			Dependency: func(*context.Context) reflect.Value {
 				return reflect.ValueOf("OK without Input and error")
 			},
 			Expected: "OK without Input and error",
 		},
 		{
 
-			Dependency: func(context.Context, ...int) reflect.Value {
+			Dependency: func(*context.Context, ...int) reflect.Value {
 				return reflect.ValueOf("OK without error and variadic ignored")
 			},
 			Expected: "OK without error and variadic ignored",
 		},
 		{
 
-			Dependency: func(context.Context) interface{} {
+			Dependency: func(*context.Context) interface{} {
 				return "1"
 			},
 			Expected: "1",
 		},
 		{
 
-			Dependency: func(context.Context) interface{} {
+			Dependency: func(*context.Context) interface{} {
 				return false
 			},
 			Expected: false,
@@ -166,5 +166,41 @@ func testDependencies(t *testing.T, tests []testDependencyTest) {
 
 		// t.Logf("[%d] %s", i, d)
 		// t.Logf("[%d] output: %#+v", i, val.Interface())
+	}
+}
+
+func TestDependentDependencyInheritanceStatic(t *testing.T) {
+	// Tests the following case #1564:
+	// Logger
+	// func(Logger) S1
+	// ^ Should be static because Logger
+	// is a structure, a static dependency.
+	//
+	// func(Logger) S2
+	// func(S1, S2) S3
+	// ^ Should be marked as static dependency
+	// because everything that depends on are static too.
+
+	type S1 struct {
+		msg string
+	}
+
+	type S2 struct {
+		msg2 string
+	}
+
+	serviceDep := NewDependency(&testServiceImpl{prefix: "1"})
+	d1 := NewDependency(func(t testService) S1 {
+		return S1{t.Say("2")}
+	}, serviceDep)
+	if !d1.Static {
+		t.Fatalf("d1 dependency should be static: %#+v", d1)
+	}
+
+	d2 := NewDependency(func(t testService, s S1) S2 {
+		return S2{"3"}
+	}, serviceDep, d1)
+	if !d2.Static {
+		t.Fatalf("d2 dependency should be static: %#+v", d2)
 	}
 }

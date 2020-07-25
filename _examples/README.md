@@ -15,11 +15,11 @@
     * [UNIX socket file](http-server/listen-unix/main.go)
     * [TLS](http-server/listen-tls/main.go)
     * [Letsencrypt (Automatic Certifications)](http-server/listen-letsencrypt/main.go)
+    * [Socket Sharding (SO_REUSEPORT)](http-server/socket-sharding/main.go)
     * [Graceful Shutdown](http-server/graceful-shutdown/default-notifier/main.go)
     * [Notify on shutdown](http-server/notify-on-shutdown/main.go)
     * Custom TCP Listener
         * [Common net.Listener](http-server/custom-listener/main.go)
-        * [SO_REUSEPORT for unix systems](http-server/custom-listener/unix-reuseport/main.go)
     * Custom HTTP Server
         * [Pass a custom Server](http-server/custom-httpserver/easy-way/main.go)
         * [Use Iris as a single http.Handler](http-server/custom-httpserver/std-way/main.go)
@@ -40,9 +40,11 @@
     * [Dynamic Path](routing/dynamic-path/main.go)
         * [Root Wildcard](routing/dynamic-path/root-wildcard/main.go)
         * [Implement a Parameter Type](routing/macros/main.go)
+        * [Same Path Pattern but Func](routing/dynamic-path/same-pattern-different-func/main.go)
     * Middleware
         * [Per Route](routing/writing-a-middleware/per-route/main.go)
         * [Globally](routing/writing-a-middleware/globally/main.go)
+        * [Handlers Execution Rule](routing/route-handlers-execution-rules/main.go)
         * [Route Register Rule](routing/route-register-rule/main.go)
         * Convert net/http Handlers
             * [From func(w http.ResponseWriter, r *http.Request, next http.HandlerFunc)](convert-handlers/negroni-like/main.go)
@@ -52,9 +54,6 @@
     * [Reverse Routing](routing/reverse/main.go)
     * [Router Wrapper](routing/custom-wrapper/main.go)
     * [Custom Router](routing/custom-router/main.go)
-    * Custom Context
-        * [Method Overriding](routing/custom-context/method-overriding/main.go)
-        * [New Implementation](routing/custom-context/new-implementation/main.go)
     * Subdomains
         * [Single](routing/subdomains/single/main.go)
         * [Multi](routing/subdomains/multi/main.go)
@@ -78,10 +77,14 @@
 * [Recovery](recover/main.go)
 * [Profiling](pprof/main.go)
 * File Server
+    * [File Server](file-server/file-server/main.go)
+    * [HTTP/2 Push Targets](file-server/http2push/main.go)
+    * [HTTP/2 Push Targets (Embedded)](file-server/http2push-embedded/main.go)
+    * [HTTP/2 Push Targets (Gzipped Embedded)](file-server/http2push-embedded-gzipped/main.go)
     * [Favicon](file-server/favicon/main.go)
     * [Basic](file-server/basic/main.go)
     * [Embedding Files Into App Executable File](file-server/embedding-files-into-app/main.go)
-    * [Embedding Gziped Files Into App Executable File](file-server/embedding-gziped-files-into-app/main.go)
+    * [Embedding Gzipped Files Into App Executable File](file-server/embedding-gzipped-files-into-app/main.go)
     * [Send Files (rate limiter included)](file-server/send-files/main.go)
     * Single Page Applications
         * [Basic SPA](file-server/single-page-application/basic/main.go)
@@ -126,11 +129,11 @@
     * [Bind Custom per type](request-body/read-custom-per-type/main.go)
     * [Bind Custom via Unmarshaler](request-body/read-custom-via-unmarshaler/main.go)
     * [Bind Many times](request-body/read-many/main.go)
-    * [Read/Bind Gzip compressed data](request-body/read-gzip/main.go)
 * Response Writer
     * [Content Negotiation](response-writer/content-negotiation)
     * [Text, Markdown, YAML, HTML, JSON, JSONP, Msgpack, XML and Binary](response-writer/write-rest/main.go)
-    * [Write Gzip](response-writer/write-gzip/main.go)
+    * [Protocol Buffers](response-writer/protobuf/main.go)
+    * [HTTP/2 Server Push](response-writer/http2push/main.go)
     * [Stream Writer](response-writer/stream-writer/main.go)
     * [Transactions](response-writer/transactions/main.go)
     * [SSE](response-writer/sse/main.go)
@@ -138,6 +141,10 @@
     * Cache
         * [Simple](response-writer/cache/simple/main.go)
         * [Client-Side (304)](response-writer/cache/client-side/main.go)
+* Compression
+    * [Server-Side](compression/main.go)
+    * [Client-Side](compression/client/main.go)
+    * [Client-Side (using Iris)](compress/client-using-iris/main.go)
 * Localization and Internationalization
     * [i18n](i18n/main.go)
 * Authentication, Authorization & Bot Detection 
@@ -180,8 +187,10 @@
     * [Smart Contract](dependency-injection/smart-contract/main.go)
     * [JWT](dependency-injection/jwt/main.go)
         * [JWT (iris-contrib)](dependency-injection/jwt/contrib/main.go)
+    * [Register Dependency from Context](dependency-injection/context-register-dependency/main.go)
 * MVC
-    * [Overview - Repository and Service layers](mvc/overview)
+    * [Overview](mvc/overview)
+    * [Repository and Service layers](mvc/repository)
     * [Hello world](mvc/hello-world/main.go)
     * [Basic](mvc/basic/main.go)
         * [Wildcard](mvc/basic/wildcard/main.go)
@@ -189,13 +198,14 @@
     * [Regexp](mvc/regexp/main.go)
     * [Session Controller](mvc/session-controller/main.go)
     * [Authenticated Controller](mvc/authenticated-controller/main.go)
+    * [Versioned Controller](mvc/versioned-controller/main.go)
     * [Websocket Controller](mvc/websocket)
     * [Register Middleware](mvc/middleware)
     * [gRPC](mvc/grpc-compatible)
     * [Login (Repository and Service layers)](mvc/login)
     * [Login (Single Responsibility)](mvc/login-mvc-single-responsibility)
     * [Vue.js Todo App](mvc/vuejs-todo-mvc)
-* [Bootstrapper](bootstrap)
+* [Bootstrapper](bootstrapper)
 * Desktop Applications
     * [The blink package](desktop/blink)
     * [The lorca package](desktop/lorca)

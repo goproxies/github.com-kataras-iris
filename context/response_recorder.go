@@ -1,13 +1,13 @@
 package context
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"sync"
 )
 
 // Recorder the middleware to enable response writer recording ( ResponseWriter -> ResponseRecorder)
-var Recorder = func(ctx Context) {
+var Recorder = func(ctx *Context) {
 	ctx.Record()
 	ctx.Next()
 }
@@ -32,6 +32,7 @@ func releaseResponseRecorder(w *ResponseRecorder) {
 // rec := context.Recorder()
 type ResponseRecorder struct {
 	ResponseWriter
+
 	// keep track of the body in order to be
 	// resetable and useful inside custom transactions
 	chunks []byte
@@ -90,20 +91,6 @@ func (w *ResponseRecorder) Write(contents []byte) (int, error) {
 	return len(contents), nil
 }
 
-// Writef formats according to a format specifier and writes to the response.
-//
-// Returns the number of bytes written and any write error encountered.
-func (w *ResponseRecorder) Writef(format string, a ...interface{}) (n int, err error) {
-	return fmt.Fprintf(w, format, a...)
-}
-
-// WriteString writes a simple string to the response.
-//
-// Returns the number of bytes written and any write error encountered
-func (w *ResponseRecorder) WriteString(s string) (n int, err error) {
-	return w.Write([]byte(s))
-}
-
 // SetBody overrides the body and sets it to a slice of bytes value.
 func (w *ResponseRecorder) SetBody(b []byte) {
 	w.chunks = b
@@ -139,11 +126,15 @@ func (w *ResponseRecorder) ClearHeaders() {
 	}
 }
 
-// Reset resets the response body, headers and the status code header.
-func (w *ResponseRecorder) Reset() {
+// Reset clears headers, sets the status code to 200
+// and clears the cached body.
+//
+// Implements the `ResponseWriterReseter`.
+func (w *ResponseRecorder) Reset() bool {
 	w.ClearHeaders()
 	w.WriteHeader(defaultStatusCode)
 	w.ResetBody()
+	return true
 }
 
 // FlushResponse the full body, headers and status code to the underline response writer
@@ -178,7 +169,12 @@ func (w *ResponseRecorder) Clone() ResponseWriter {
 	wc.headers = w.headers
 	wc.chunks = w.chunks[0:]
 	if resW, ok := w.ResponseWriter.(*responseWriter); ok {
-		wc.ResponseWriter = &(*resW) // clone it
+		wc.ResponseWriter = &responseWriter{
+			ResponseWriter: resW.ResponseWriter,
+			statusCode:     resW.statusCode,
+			written:        resW.written,
+			beforeFlush:    resW.beforeFlush,
+		} // clone it
 	} else { // else just copy, may pointer, developer can change its behavior
 		wc.ResponseWriter = w.ResponseWriter
 	}
@@ -242,6 +238,10 @@ func (w *ResponseRecorder) Flush() {
 	w.ResetBody()
 }
 
+// ErrPushNotSupported is returned by the Push method to
+// indicate that HTTP/2 Push support is not available.
+var ErrPushNotSupported = errors.New("push feature is not supported by this ResponseWriter")
+
 // Push initiates an HTTP/2 server push. This constructs a synthetic
 // request using the given target and options, serializes that request
 // into a PUSH_PROMISE frame, then dispatches that request using the
@@ -262,12 +262,19 @@ func (w *ResponseRecorder) Flush() {
 //
 // Push returns ErrPushNotSupported if the client has disabled push or if push
 // is not supported on the underlying connection.
-func (w *ResponseRecorder) Push(target string, opts *http.PushOptions) error {
+func (w *ResponseRecorder) Push(target string, opts *http.PushOptions) (err error) {
 	w.FlushResponse()
-	err := w.ResponseWriter.Push(target, opts)
+
+	if pusher, ok := w.ResponseWriter.Naive().(http.Pusher); ok {
+		err = pusher.Push(target, opts)
+		if err != nil && err.Error() == http.ErrNotSupported.ErrorString {
+			return ErrPushNotSupported
+		}
+	}
+
 	// NOTE: we have to reset them even if the push failed.
 	w.ResetBody()
 	w.ResetHeaders()
 
-	return err
+	return ErrPushNotSupported
 }

@@ -91,6 +91,9 @@ func (repo *repository) register(route *Route, rule RouteRegisterRule) (*Route, 
 				return r, nil
 			} else if rule == RouteError {
 				return nil, fmt.Errorf("new route: %s conflicts with an already registered one: %s route", route.String(), r.String())
+			} else if rule == RouteOverlap {
+				overlapRoute(r, route)
+				return route, nil
 			} else {
 				// replace existing with the latest one, the default behavior.
 				repo.routes = append(repo.routes[:i], repo.routes[i+1:]...)
@@ -111,6 +114,38 @@ func (repo *repository) register(route *Route, rule RouteRegisterRule) (*Route, 
 	}
 
 	return route, nil
+}
+
+var defaultOverlapFilter = func(ctx *context.Context) bool {
+	if ctx.IsStopped() {
+		// It's stopped and the response can be overridden by a new handler.
+		rs, ok := ctx.ResponseWriter().(context.ResponseWriterReseter)
+		return ok && rs.Reset()
+	}
+
+	// It's not stopped, all OK no need to execute the alternative route.
+	return false
+}
+
+func overlapRoute(r *Route, next *Route) {
+	next.BuildHandlers()
+	nextHandlers := next.Handlers[0:]
+
+	decisionHandler := func(ctx *context.Context) {
+		ctx.Next()
+
+		if !defaultOverlapFilter(ctx) {
+			return
+		}
+
+		ctx.SetCurrentRoute(next.ReadOnly)
+		ctx.HandlerIndex(0)
+		ctx.Do(nextHandlers)
+	}
+
+	// NOTE(@kataras): Any UseGlobal call will prepend to this, if they are
+	// in the same Party then it's expected, otherwise not.
+	r.beginHandlers = append(context.Handlers{decisionHandler}, r.beginHandlers...)
 }
 
 // APIBuilder the visible API for constructing the router
@@ -254,17 +289,24 @@ func (api *APIBuilder) SetExecutionRules(executionRules ExecutionRules) Party {
 type RouteRegisterRule uint8
 
 const (
-	// RouteOverride an existing route with the new one, the default rule.
+	// RouteOverride replaces an existing route with the new one, the default rule.
 	RouteOverride RouteRegisterRule = iota
-	// RouteSkip registering a new route twice.
+	// RouteSkip keeps the original route and skips the new one.
 	RouteSkip
 	// RouteError log when a route already exists, shown after the `Build` state,
 	// server never starts.
 	RouteError
+	// RouteOverlap will overlap the new route to the previous one.
+	// If the route stopped and its response can be reset then the new route will be execute.
+	RouteOverlap
 )
 
 // SetRegisterRule sets a `RouteRegisterRule` for this Party and its children.
-// Available values are: RouteOverride (the default one), RouteSkip and RouteError.
+// Available values are:
+// * RouteOverride (the default one)
+// * RouteSkip
+// * RouteError
+// * RouteOverlap.
 func (api *APIBuilder) SetRegisterRule(rule RouteRegisterRule) Party {
 	api.routeRegisterRule = rule
 	return api
@@ -341,21 +383,28 @@ func (api *APIBuilder) HandleMany(methodOrMulti string, relativePathorMulti stri
 // with the contents of a file system (physical or embedded).
 //
 // first parameter  : the route path
-// second parameter : the system or the embedded directory that needs to be served
-// third parameter  : not required, the directory options, set fields is optional.
+// second parameter : the file system needs to be served
+// third parameter  : not required, the serve directory options.
 //
 // Alternatively, to get just the handler for that look the FileServer function instead.
 //
-//     api.HandleDir("/static", "./assets",  DirOptions {ShowList: true, Gzip: true, IndexName: "index.html"})
+//     api.HandleDir("/static", iris.Dir("./assets"), iris.DirOptions{IndexName: "/index.html", Compress: true})
 //
-// Returns the GET *Route.
+// Returns all the registered routes, including GET index and path patterm and HEAD.
 //
 // Examples can be found at: https://github.com/kataras/iris/tree/master/_examples/file-server
-func (api *APIBuilder) HandleDir(requestPath, directory string, opts ...DirOptions) (getRoute *Route) {
-	options := getDirOptions(opts...)
+func (api *APIBuilder) HandleDir(requestPath string, fs http.FileSystem, opts ...DirOptions) (routes []*Route) {
+	options := DefaultDirOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	}
 
-	h := FileServer(directory, options)
-	description := directory
+	h := FileServer(fs, options)
+	description := "file server"
+	if d, ok := fs.(http.Dir); ok {
+		description = string(d)
+	}
+
 	fileName, lineNumber := context.HandlerFileLine(h) // take those before StripPrefix.
 
 	// if subdomain, we get the full path of the path only,
@@ -366,41 +415,14 @@ func (api *APIBuilder) HandleDir(requestPath, directory string, opts ...DirOptio
 		h = StripPrefix(fullpath, h)
 	}
 
-	requestPath = joinPath(requestPath, WildcardFileParam())
-	routes := api.CreateRoutes([]string{http.MethodGet, http.MethodHead}, requestPath, h)
-	getRoute = routes[0]
-	// we get all index, including sub directories even if those
-	// are already managed by the static handler itself.
-	staticSites := context.GetStaticSites(directory, getRoute.StaticPath(), options.IndexName)
-	for _, s := range staticSites {
-		// if the end-dev did manage that index route manually already
-		// then skip the auto-registration.
-		//
-		// Also keep note that end-dev is still able to replace this route and manage by him/herself
-		// later on by a simple `Handle/Get/` call, refer to `repository#register`.
-		if api.GetRouteByPath(s.RequestPath) != nil {
-			continue
-		}
-
-		if n := len(api.relativePath); n > 0 && api.relativePath[n-1] == SubdomainPrefix[0] {
-			// this api is a subdomain-based.
-			slashIdx := strings.IndexByte(s.RequestPath, '/')
-			if slashIdx == -1 {
-				slashIdx = 0
-			}
-
-			requestPath = s.RequestPath[slashIdx:]
-		} else {
-			requestPath = s.RequestPath[strings.Index(s.RequestPath, api.relativePath)+len(api.relativePath):]
-		}
-
-		if requestPath == "" {
-			requestPath = "/"
-		}
-
-		routes = append(routes, api.CreateRoutes([]string{http.MethodGet}, requestPath, h)...)
-		getRoute.StaticSites = append(getRoute.StaticSites, s)
+	if api.GetRouteByPath(fullpath) == nil {
+		// register index if not registered by the end-developer.
+		routes = api.CreateRoutes([]string{http.MethodGet, http.MethodHead}, requestPath, h)
 	}
+
+	requestPath = joinPath(requestPath, WildcardFileParam())
+
+	routes = append(routes, api.CreateRoutes([]string{http.MethodGet, http.MethodHead}, requestPath, h)...)
 
 	for _, route := range routes {
 		if route.Method == http.MethodHead {
@@ -415,7 +437,7 @@ func (api *APIBuilder) HandleDir(requestPath, directory string, opts ...DirOptio
 		}
 	}
 
-	return getRoute
+	return routes
 }
 
 // CreateRoutes returns a list of Party-based Routes.
@@ -462,13 +484,14 @@ func (api *APIBuilder) createRoutes(errorCode int, methods []string, relativePat
 	// but dev may change the rules for that child Party, so we have to make clones of them here.
 
 	var (
-		beginHandlers context.Handlers
-		doneHandlers  context.Handlers
+		// global middleware to error handlers as well.
+		beginHandlers = api.beginGlobalHandlers
+		doneHandlers  = api.doneGlobalHandlers
 	)
 
 	if errorCode == 0 {
-		beginHandlers = joinHandlers(api.middleware, beginHandlers)
-		doneHandlers = joinHandlers(api.doneHandlers, doneHandlers)
+		beginHandlers = context.JoinHandlers(beginHandlers, api.middleware)
+		doneHandlers = context.JoinHandlers(doneHandlers, api.doneHandlers)
 	}
 
 	mainHandlers := context.Handlers(handlers)
@@ -486,9 +509,9 @@ func (api *APIBuilder) createRoutes(errorCode int, methods []string, relativePat
 
 	// global begin handlers -> middleware that are registered before route registration
 	// -> handlers that are passed to this Handle function.
-	routeHandlers := joinHandlers(beginHandlers, mainHandlers)
+	routeHandlers := context.JoinHandlers(beginHandlers, mainHandlers)
 	// -> done handlers
-	routeHandlers = joinHandlers(routeHandlers, doneHandlers)
+	routeHandlers = context.JoinHandlers(routeHandlers, doneHandlers)
 
 	// here we separate the subdomain and relative path
 	subdomain, path := splitSubdomainAndPath(fullpath)
@@ -517,8 +540,8 @@ func (api *APIBuilder) createRoutes(errorCode int, methods []string, relativePat
 		route.SourceLineNumber = mainHandlerFileNumber
 
 		// Add UseGlobal & DoneGlobal Handlers
-		route.Use(api.beginGlobalHandlers...)
-		route.Done(api.doneGlobalHandlers...)
+		// route.Use(api.beginGlobalHandlers...)
+		// route.Done(api.doneGlobalHandlers...)
 
 		routes[i] = route
 	}
@@ -576,7 +599,7 @@ func (api *APIBuilder) Party(relativePath string, handlers ...context.Handler) P
 
 	fullpath := parentPath + relativePath
 	// append the parent's + child's handlers
-	middleware := joinHandlers(api.middleware, handlers)
+	middleware := context.JoinHandlers(api.middleware, handlers)
 
 	// the allow methods per party and its children.
 	allowMethods := make([]string, len(api.allowMethods))
@@ -756,7 +779,11 @@ func (api *APIBuilder) Use(handlers ...context.Handler) {
 // It's always a good practise to call it right before the `Application#Run` function.
 func (api *APIBuilder) UseGlobal(handlers ...context.Handler) {
 	for _, r := range api.routes.routes {
-		r.Use(handlers...) // prepend the handlers to the existing routes
+		// r.beginHandlers = append(handlers, r.beginHandlers...)
+		// ^ this is correct but we act global begin handlers as one chain, so
+		// if called last more than one time, after all routes registered, we must somehow
+		// register them by order, so:
+		r.Use(handlers...)
 	}
 	// set as begin handlers for the next routes as well.
 	api.beginGlobalHandlers = append(api.beginGlobalHandlers, handlers...)
@@ -905,7 +932,7 @@ func (api *APIBuilder) registerResourceRoute(reqPath string, h context.Handler) 
 // Returns the GET *Route.
 func (api *APIBuilder) StaticContent(reqPath string, cType string, content []byte) *Route {
 	modtime := time.Now()
-	h := func(ctx context.Context) {
+	h := func(ctx *context.Context) {
 		ctx.ContentType(cType)
 		if _, err := ctx.WriteWithExpiration(content, modtime); err != nil {
 			ctx.StatusCode(http.StatusInternalServerError)
@@ -955,7 +982,7 @@ func (api *APIBuilder) Favicon(favPath string, requestPath ...string) *Route {
 
 	modtime := time.Now()
 	cType := TypeByFilename(favPath)
-	h := func(ctx context.Context) {
+	h := func(ctx *context.Context) {
 		ctx.ContentType(cType)
 		if _, err := ctx.WriteWithExpiration(cacheFav, modtime); err != nil {
 			ctx.StatusCode(http.StatusInternalServerError)
@@ -1010,25 +1037,12 @@ func (api *APIBuilder) OnAnyErrorCode(handlers ...context.Handler) (routes []*Ro
 //
 // Examples: https://github.com/kataras/iris/tree/master/_examples/view
 func (api *APIBuilder) Layout(tmplLayoutFile string) Party {
-	api.Use(func(ctx context.Context) {
+	api.Use(func(ctx *context.Context) {
 		ctx.ViewLayout(tmplLayoutFile)
 		ctx.Next()
 	})
 
 	return api
-}
-
-// joinHandlers uses to create a copy of all Handlers and return them in order to use inside the node
-func joinHandlers(h1 context.Handlers, h2 context.Handlers) context.Handlers {
-	nowLen := len(h1)
-	totalLen := nowLen + len(h2)
-	// create a new slice of Handlers in order to merge the "h1" and "h2"
-	newHandlers := make(context.Handlers, totalLen)
-	// copy the already Handlers to the just created
-	copy(newHandlers, h1)
-	// start from there we finish, and store the new Handlers too
-	copy(newHandlers[nowLen:], h2)
-	return newHandlers
 }
 
 // https://golang.org/doc/go1.9#callersframes

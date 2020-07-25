@@ -43,15 +43,15 @@ func TestProxy(t *testing.T) {
 	t.Log(listener.Addr().String())
 
 	app := iris.New()
-	app.Get("/", func(ctx context.Context) {
+	app.Get("/", func(ctx *context.Context) {
 		ctx.WriteString(expectedIndex)
 	})
 
-	app.Get("/about", func(ctx context.Context) {
+	app.Get("/about", func(ctx *context.Context) {
 		ctx.WriteString(expectedAbout)
 	})
 
-	app.OnErrorCode(iris.StatusNotFound, func(ctx context.Context) {
+	app.OnErrorCode(iris.StatusNotFound, func(ctx *context.Context) {
 		ctx.WriteString(unexpectedRoute)
 	})
 
@@ -60,7 +60,7 @@ func TestProxy(t *testing.T) {
 		t.Fatalf("%v while creating tcp4 listener for new tls local test listener", err)
 	}
 	// main server
-	go app.Run(iris.Listener(httptest.NewLocalTLSListener(l)), iris.WithoutStartupLog)
+	go app.Run(iris.Listener(httptest.NewLocalTLSListener(l)), iris.WithoutStartupLog) // nolint:errcheck
 
 	e := httptest.NewInsecure(t, httptest.URL("http://"+listener.Addr().String()))
 	e.GET("/").Expect().Status(iris.StatusOK).Body().Equal(expectedIndex)

@@ -1,6 +1,10 @@
 package requestid
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
+	"net/http/httputil"
+
 	"github.com/kataras/iris/v12/context"
 
 	"github.com/google/uuid"
@@ -10,11 +14,11 @@ func init() {
 	context.SetHandlerName("iris/middleware/requestid.*", "iris.request.id")
 }
 
-const xRequestIDHeaderValue = "X-Request-Id"
+const xRequestIDHeaderKey = "X-Request-Id"
 
 // Generator defines the function which should extract or generate
 // a Request ID. See `DefaultGenerator` and `New` package-level functions.
-type Generator func(ctx context.Context) string
+type Generator func(ctx *context.Context) string
 
 // DefaultGenerator is the default `Generator` that is used
 // when nil is passed on `New` package-level function.
@@ -22,9 +26,13 @@ type Generator func(ctx context.Context) string
 // or, if missing, it generates a new UUID(v4) and sets the header and context value.
 //
 // See `Get` package-level function too.
-var DefaultGenerator Generator = func(ctx context.Context) string {
-	id := ctx.GetHeader(xRequestIDHeaderValue)
+var DefaultGenerator Generator = func(ctx *context.Context) string {
+	id := ctx.ResponseWriter().Header().Get(xRequestIDHeaderKey)
+	if id != "" {
+		return id
+	}
 
+	id = ctx.GetHeader(xRequestIDHeaderKey)
 	if id == "" {
 		uid, err := uuid.NewRandom()
 		if err != nil {
@@ -33,10 +41,19 @@ var DefaultGenerator Generator = func(ctx context.Context) string {
 		}
 
 		id = uid.String()
-		ctx.Header(xRequestIDHeaderValue, id)
 	}
 
+	ctx.Header(xRequestIDHeaderKey, id)
 	return id
+}
+
+// HashGenerator uses the request's hash to generate a fixed-length Request ID.
+// Note that one or many requests may contain the same ID, so it's not unique.
+func HashGenerator(includeBody bool) Generator {
+	return func(ctx *context.Context) string {
+		ctx.Header(xRequestIDHeaderKey, Hash(ctx, includeBody))
+		return DefaultGenerator(ctx)
+	}
 }
 
 // New returns a new request id middleware.
@@ -50,7 +67,7 @@ func New(generator ...Generator) context.Handler {
 		gen = generator[0]
 	}
 
-	return func(ctx context.Context) {
+	return func(ctx *context.Context) {
 		if Get(ctx) != "" {
 			ctx.Next()
 			return
@@ -71,7 +88,7 @@ func New(generator ...Generator) context.Handler {
 // Get returns the Request ID or empty string.
 //
 // A shortcut of `context.GetID().(string)`.
-func Get(ctx context.Context) string {
+func Get(ctx *context.Context) string {
 	v := ctx.GetID()
 	if v != nil {
 		if id, ok := v.(string); ok {
@@ -80,4 +97,16 @@ func Get(ctx context.Context) string {
 	}
 
 	return ""
+}
+
+// Hash returns the sha1 hash of the request.
+// It does not capture error, instead it returns an empty string.
+func Hash(ctx *context.Context, includeBody bool) string {
+	h := sha1.New()
+	b, err := httputil.DumpRequest(ctx.Request(), includeBody)
+	if err != nil {
+		return ""
+	}
+	h.Write(b)
+	return hex.EncodeToString(h.Sum(nil))
 }

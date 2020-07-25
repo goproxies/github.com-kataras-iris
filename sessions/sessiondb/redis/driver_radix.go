@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strconv"
 
 	"github.com/mediocregopher/radix/v3"
 	"github.com/mediocregopher/radix/v3/resp/resp2"
 )
+
+// radixPool an interface to complete both *radix.Pool and *radix.Cluster.
+type radixPool interface {
+	Do(a radix.Action) error
+	Close() error
+}
 
 // RadixDriver the Redis service based on the radix go client,
 // contains the config and the redis pool.
@@ -18,7 +23,7 @@ type RadixDriver struct {
 	Connected bool
 	// Config the read-only redis database config.
 	Config Config
-	pool   *radix.Pool
+	pool   radixPool
 }
 
 // Connect connects to the redis, called only once
@@ -70,6 +75,12 @@ func (r *RadixDriver) Connect(c Config) error {
 
 	var connFunc radix.ConnFunc
 
+	/* Note(@kataras): according to #1545 the below does NOT work, and we should
+	use the Cluster instance itself to fire requests.
+	We need a separate `radix.Cluster` instance to do the calls,
+	fortunally both Pool and Cluster implement the same Do and Close methods we need,
+	so a new `radixPool` interface to remove any dupl code is used instead.
+
 	if len(c.Clusters) > 0 {
 		cluster, err := radix.NewCluster(c.Clusters)
 		if err != nil {
@@ -84,14 +95,31 @@ func (r *RadixDriver) Connect(c Config) error {
 			return radix.Dial(c.Network, node.Addr, options...)
 		}
 	} else {
-		connFunc = func(network, addr string) (radix.Conn, error) {
-			return radix.Dial(c.Network, c.Addr, options...)
-		}
+	*/
+	connFunc = func(network, addr string) (radix.Conn, error) {
+		return radix.Dial(c.Network, c.Addr, options...)
 	}
 
-	pool, err := radix.NewPool(c.Network, c.Addr, c.MaxActive, radix.PoolConnFunc(connFunc))
-	if err != nil {
-		return err
+	var pool radixPool
+
+	if len(c.Clusters) > 0 {
+		poolFunc := func(network, addr string) (radix.Client, error) {
+			return radix.NewPool(network, addr, c.MaxActive, radix.PoolConnFunc(connFunc))
+		}
+
+		cluster, err := radix.NewCluster(c.Clusters, radix.ClusterPoolFunc(poolFunc))
+		if err != nil {
+			return err
+		}
+
+		pool = cluster
+	} else {
+		p, err := radix.NewPool(c.Network, c.Addr, c.MaxActive, radix.PoolConnFunc(connFunc))
+		if err != nil {
+			return err
+		}
+
+		pool = p
 	}
 
 	r.Connected = true
@@ -121,18 +149,12 @@ func (r *RadixDriver) CloseConnection() error {
 // Set sets a key-value to the redis store.
 // The expiration is setted by the secondsLifetime.
 func (r *RadixDriver) Set(key string, value interface{}, secondsLifetime int64) error {
-	// fmt.Printf("%#+v. %T. %s\n", value, value, value)
-
-	// if vB, ok := value.([]byte); ok && secondsLifetime <= 0 {
-	// 	return r.pool.Do(radix.Cmd(nil, "MSET", r.Config.Prefix+key, string(vB)))
-	// }
-
 	var cmd radix.CmdAction
 	// if has expiration, then use the "EX" to delete the key automatically.
 	if secondsLifetime > 0 {
-		cmd = radix.FlatCmd(nil, "SETEX", r.Config.Prefix+key, secondsLifetime, value)
+		cmd = radix.FlatCmd(nil, "SETEX", key, secondsLifetime, value)
 	} else {
-		cmd = radix.FlatCmd(nil, "SET", r.Config.Prefix+key, value) // MSET same performance...
+		cmd = radix.FlatCmd(nil, "SET", key, value) // MSET same performance...
 	}
 
 	return r.pool.Do(cmd)
@@ -140,11 +162,11 @@ func (r *RadixDriver) Set(key string, value interface{}, secondsLifetime int64) 
 
 // Get returns value, err by its key
 // returns nil and a filled error if something bad happened.
-func (r *RadixDriver) Get(key string) (interface{}, error) {
+func (r *RadixDriver) Get(key string /* full key */) (interface{}, error) {
 	var redisVal interface{}
 	mn := radix.MaybeNil{Rcv: &redisVal}
 
-	err := r.pool.Do(radix.Cmd(&mn, "GET", r.Config.Prefix+key))
+	err := r.pool.Do(radix.Cmd(&mn, "GET", key))
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +180,7 @@ func (r *RadixDriver) Get(key string) (interface{}, error) {
 // Read more at: https://redis.io/commands/ttl
 func (r *RadixDriver) TTL(key string) (seconds int64, hasExpiration bool, found bool) {
 	var redisVal interface{}
-	err := r.pool.Do(radix.Cmd(&redisVal, "TTL", r.Config.Prefix+key))
+	err := r.pool.Do(radix.Cmd(&redisVal, "TTL", key))
 	if err != nil {
 		return -2, false, false
 	}
@@ -170,9 +192,9 @@ func (r *RadixDriver) TTL(key string) (seconds int64, hasExpiration bool, found 
 	return
 }
 
-func (r *RadixDriver) updateTTLConn(key string, newSecondsLifeTime int64) error {
+func (r *RadixDriver) updateTTLConn(key string /* full key */, newSecondsLifeTime int64) error {
 	var reply int
-	err := r.pool.Do(radix.FlatCmd(&reply, "EXPIRE", r.Config.Prefix+key, newSecondsLifeTime))
+	err := r.pool.Do(radix.FlatCmd(&reply, "EXPIRE", key, newSecondsLifeTime))
 	if err != nil {
 		return err
 	}
@@ -201,8 +223,8 @@ func (r *RadixDriver) UpdateTTL(key string, newSecondsLifeTime int64) error {
 // UpdateTTLMany like `UpdateTTL` but for all keys starting with that "prefix",
 // it is a bit faster operation if you need to update all sessions keys (although it can be even faster if we used hash but this will limit other features),
 // look the `sessions/Database#OnUpdateExpiration` for example.
-func (r *RadixDriver) UpdateTTLMany(prefix string, newSecondsLifeTime int64) error {
-	keys, err := r.getKeys("0", prefix)
+func (r *RadixDriver) UpdateTTLMany(prefix string /* prefix is the sid */, newSecondsLifeTime int64) error {
+	keys, err := r.getKeys("0", prefix, true)
 	if err != nil {
 		return err
 	}
@@ -256,16 +278,26 @@ func (s *scanResult) UnmarshalRESP(br *bufio.Reader) error {
 	return (resp2.Any{I: &s.keys}).UnmarshalRESP(br)
 }
 
-func (r *RadixDriver) getKeys(cursor, prefix string) ([]string, error) {
+func (r *RadixDriver) getKeys(cursor, prefix string, includeSID bool) ([]string, error) {
 	var res scanResult
-	err := r.pool.Do(radix.Cmd(&res, "SCAN", cursor, "MATCH", r.Config.Prefix+prefix+"*", "COUNT", "300000"))
+
+	if !includeSID {
+		prefix += r.Config.Delim // delim can be used for fast matching of only keys.
+	}
+	pattern := prefix + "*"
+
+	err := r.pool.Do(radix.Cmd(&res, "SCAN", cursor, "MATCH", pattern, "COUNT", "300000"))
 	if err != nil {
 		return nil, err
 	}
 
+	if len(res.keys) == 0 {
+		return nil, nil
+	}
+
 	keys := res.keys[0:]
 	if res.cur != "0" {
-		moreKeys, err := r.getKeys(res.cur, prefix)
+		moreKeys, err := r.getKeys(res.cur, prefix, includeSID)
 		if err != nil {
 			return nil, err
 		}
@@ -279,26 +311,11 @@ func (r *RadixDriver) getKeys(cursor, prefix string) ([]string, error) {
 // GetKeys returns all redis keys using the "SCAN" with MATCH command.
 // Read more at:  https://redis.io/commands/scan#the-match-option.
 func (r *RadixDriver) GetKeys(prefix string) ([]string, error) {
-	return r.getKeys("0", prefix)
+	return r.getKeys("0", prefix, false)
 }
-
-// // GetBytes returns bytes representation of a value based on given "key".
-// func (r *Service) GetBytes(key string) ([]byte, error) {
-// 	var redisVal []byte
-// 	mn := radix.MaybeNil{Rcv: &redisVal}
-// 	err := r.pool.Do(radix.Cmd(&mn, "GET", r.Config.Prefix+key))
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	if mn.Nil {
-// 		return nil, ErrKeyNotFound.Format(key)
-// 	}
-
-// 	return redisVal, nil
-// }
 
 // Delete removes redis entry by specific key
 func (r *RadixDriver) Delete(key string) error {
-	err := r.pool.Do(radix.Cmd(nil, "DEL", r.Config.Prefix+key))
+	err := r.pool.Do(radix.Cmd(nil, "DEL", key))
 	return err
 }

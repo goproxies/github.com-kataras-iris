@@ -4,16 +4,16 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/kataras/iris/v12/context"
 
 	"github.com/fatih/structs"
+	"google.golang.org/protobuf/proto"
 )
 
 // ResultHandler describes the function type which should serve the "v" struct value.
-type ResultHandler func(ctx context.Context, v interface{}) error
+type ResultHandler func(ctx *context.Context, v interface{}) error
 
-func defaultResultHandler(ctx context.Context, v interface{}) error {
+func defaultResultHandler(ctx *context.Context, v interface{}) error {
 	if p, ok := v.(PreflightResult); ok {
 		if err := p.Preflight(ctx); err != nil {
 			return err
@@ -57,7 +57,7 @@ func defaultResultHandler(ctx context.Context, v interface{}) error {
 // Example at: https://github.com/kataras/iris/tree/master/_examples/dependency-injection/overview.
 type Result interface {
 	// Dispatch should send a response to the client.
-	Dispatch(context.Context)
+	Dispatch(*context.Context)
 }
 
 // PreflightResult is an interface which implementers
@@ -73,7 +73,7 @@ type Result interface {
 // The caller can manage it at the handler itself. However,
 // to reduce thoese type of duplications it's preferable to use such a standard interface instead.
 type PreflightResult interface {
-	Preflight(context.Context) error
+	Preflight(*context.Context) error
 }
 
 var defaultFailureResponse = Response{Code: DefaultErrStatusCode}
@@ -114,14 +114,23 @@ type compatibleErr interface {
 	Error() string
 }
 
-// dispatchErr writes the error to the response.
-func dispatchErr(ctx context.Context, status int, err error) bool {
+// dispatchErr sets the error status code
+// and the error value to the context.
+// The APIBuilder's On(Any)ErrorCode is responsible to render this error code.
+func dispatchErr(ctx *context.Context, status int, err error) bool {
 	if err == nil {
 		return false
 	}
 
-	ctx.StatusCode(status)
-	DefaultErrorHandler.HandleError(ctx, err)
+	if err != ErrStopExecution {
+		if status == 0 || !context.StatusCodeNotSuccessful(status) {
+			status = DefaultErrStatusCode
+		}
+
+		ctx.StatusCode(status)
+	}
+
+	ctx.SetErr(err)
 	return true
 }
 
@@ -154,7 +163,7 @@ func dispatchErr(ctx context.Context, status int, err error) bool {
 // Result or (Result, error) and so on...
 //
 // where Get is an HTTP METHOD.
-func dispatchFuncResult(ctx context.Context, values []reflect.Value, handler ResultHandler) error {
+func dispatchFuncResult(ctx *context.Context, values []reflect.Value, handler ResultHandler) error {
 	if len(values) == 0 {
 		return nil
 	}
@@ -271,6 +280,7 @@ func dispatchFuncResult(ctx context.Context, values []reflect.Value, handler Res
 				contentType = value
 			} else {
 				// otherwise is content
+				contentType = context.ContentTextHeaderValue
 				content = []byte(value)
 			}
 
@@ -323,7 +333,7 @@ func dispatchFuncResult(ctx context.Context, values []reflect.Value, handler Res
 
 // dispatchCommon is being used internally to send
 // commonly used data to the response writer with a smart way.
-func dispatchCommon(ctx context.Context,
+func dispatchCommon(ctx *context.Context,
 	statusCode int, contentType string, content []byte, v interface{}, handler ResultHandler, found bool) error {
 	// if we have a false boolean as a return value
 	// then skip everything and fire a not found,
@@ -415,7 +425,7 @@ type Response struct {
 var _ Result = Response{}
 
 // Dispatch writes the response result to the context's response writer.
-func (r Response) Dispatch(ctx context.Context) {
+func (r Response) Dispatch(ctx *context.Context) {
 	if dispatchErr(ctx, r.Code, r.Err) {
 		return
 	}
@@ -491,7 +501,7 @@ func ensureExt(s string) string {
 
 // Dispatch writes the template filename, template layout and (any) data to the  client.
 // Completes the `Result` interface.
-func (r View) Dispatch(ctx context.Context) { // r as Response view.
+func (r View) Dispatch(ctx *context.Context) { // r as Response view.
 	if dispatchErr(ctx, r.Code, r.Err) {
 		return
 	}
@@ -519,9 +529,7 @@ func (r View) Dispatch(ctx context.Context) { // r as Response view.
 				// else check if r.Data is map or struct, if struct convert it to map,
 				// do a range loop and modify the data one by one.
 				// context.Map is actually a map[string]interface{} but we have to make that check:
-				if m, ok := r.Data.(map[string]interface{}); ok {
-					setViewData(ctx, m)
-				} else if m, ok := r.Data.(context.Map); ok {
+				if m, ok := r.Data.(context.Map); ok {
 					setViewData(ctx, m)
 				} else if reflect.Indirect(reflect.ValueOf(r.Data)).Kind() == reflect.Struct {
 					setViewData(ctx, structs.Map(r))
@@ -533,7 +541,7 @@ func (r View) Dispatch(ctx context.Context) { // r as Response view.
 	}
 }
 
-func setViewData(ctx context.Context, data map[string]interface{}) {
+func setViewData(ctx *context.Context, data map[string]interface{}) {
 	for k, v := range data {
 		ctx.ViewData(k, v)
 	}

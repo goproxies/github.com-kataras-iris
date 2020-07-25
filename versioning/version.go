@@ -22,7 +22,9 @@ const (
 	// 	ctx.Next()
 	// }
 	//
-	// DEPRECATED: May 06 2020: Use `ctx.SetVersion(ctx.URLParamDefault("version", "1"))` instead.
+	// DEPRECATED: Use:
+	// version := ctx.URLParamDefault("version", "1")
+	// versioning.SetVersion(ctx, version) instead.
 	Key = "iris.api.version"
 	// NotFound is the key that can be used inside a `Map` or inside `ctx.SetVersion(versioning.NotFound)`
 	// to tell that a version wasn't found, therefore the not found handler should handle the request instead.
@@ -31,7 +33,7 @@ const (
 
 // NotFoundHandler is the default version not found handler that
 // is executed from `NewMatcher` when no version is registered as available to dispatch a resource.
-var NotFoundHandler = func(ctx context.Context) {
+var NotFoundHandler = func(ctx *context.Context) {
 	// 303 is an option too,
 	// end-dev has the chance to change that behavior by using the NotFound in the map:
 	//
@@ -56,7 +58,9 @@ var NotFoundHandler = func(ctx context.Context) {
 //
 // However, the end developer can also set a custom version for a handler via a middleware by using the context's store key
 // for versions (see `Key` for further details on that).
-func GetVersion(ctx context.Context) string {
+//
+// See `SetVersion` too.
+func GetVersion(ctx *context.Context) string {
 	// firstly by context store, if manually set by a middleware.
 	version := ctx.Values().GetString(ctx.Application().ConfigurationReadOnly().GetVersionContextKey())
 	if version != "" {
@@ -95,4 +99,11 @@ func GetVersion(ctx context.Context) string {
 	}
 
 	return ""
+}
+
+// SetVersion force-sets the API Version.
+// It can be used inside a middleware.
+// See `GetVersion` too.
+func SetVersion(ctx *context.Context, constraint string) {
+	ctx.Values().Set(ctx.Application().ConfigurationReadOnly().GetVersionContextKey(), constraint)
 }

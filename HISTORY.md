@@ -371,13 +371,72 @@ Other Improvements:
 
 ![DBUG routes](https://iris-go.com/images/v12.2.0-dbug2.png?v=0)
 
-- New [rollbar example](https://github.com/kataras/iris/tree/master/_examples/logging/rollbar/main.go).
+- Fix [#1569#issuecomment-663739177](https://github.com/kataras/iris/issues/1569#issuecomment-663739177).
+
+- Fix [#1564](https://github.com/kataras/iris/issues/1564).
+
+- Fix [#1553](https://github.com/kataras/iris/issues/1553).
+
+- New `DirOptions.Cache` to cache assets in-memory among with their compressed contents (in order to be ready to served if client ask). Learn more about this feature by reading [all #1556 comments](https://github.com/kataras/iris/issues/1556#issuecomment-661057446). Usage:
+
+```go
+var dirOpts = DirOptions{
+    // [...other options]
+    Cache: DirCacheOptions{
+        Enable: true,
+        // Don't compress files smaller than 300 bytes.
+        CompressMinSize: 300,
+        // Ignore compress already compressed file types
+        // (some images and pdf).
+        CompressIgnore: iris.MatchImagesAssets,
+        // Gzip, deflate, br(brotli), snappy.
+        Encodings: []string{"gzip", "deflate", "br", "snappy"},
+        // Log to the stdout the total reduced file size.
+        Verbose: 1,
+    },
+}
+```
+
+- New `DirOptions.PushTargets` and `PushTargetsRegexp` to push index' assets to the client without additional requests. Inspirated by issue [#1562](https://github.com/kataras/iris/issues/1562). Example matching all `.js, .css and .ico` files (recursively):
+
+```go
+var dirOpts = iris.DirOptions{
+    // [...other options]
+    IndexName: "/index.html",
+    PushTargetsRegexp: map[string]*regexp.Regexp{
+        "/": regexp.MustCompile("((.*).js|(.*).css|(.*).ico)$"),
+        // OR:
+        // "/": iris.MatchCommonAssets,
+    },
+    Compress: true,
+}
+```
+
+- Update jet parser to v4.0.2, closes [#1551](https://github.com/kataras/iris/issues/1551). It contains two breaking changes by its author:
+    - Relative paths on `extends, import, include...` tmpl functions, e.g. `{{extends "../layouts/application.jet"}}` instead of `layouts/application.jet`
+    - the new [jet.Ranger](https://github.com/CloudyKit/jet/pull/165) interface now requires a `ProvidesIndex() bool` method too
+    - Example has been [updated](https://github.com/kataras/iris/tree/master/_examples/view/template_jet_0)
+
+- Fix [#1552](https://github.com/kataras/iris/issues/1552).
+
+- Proper listing of root directories on `Party.HandleDir` when its `DirOptions.ShowList` was set to true.
+    - Customize the file/directory listing page through views, see [example](https://github.com/kataras/iris/tree/master/_examples/file-server/file-server).
+
+- Socket Sharding as requested at [#1544](https://github.com/kataras/iris/issues/1544). New `iris.WithSocketSharding` Configurator and `SocketSharding bool` setting.
+
+- Versioned Controllers feature through the new `mvc.Version` option. See [_examples/mvc/versioned-controller](https://github.com/kataras/iris/blob/master/_examples/mvc/versioned-controller/main.go).
+
+- Fix [#1539](https://github.com/kataras/iris/issues/1539).
+
+- New [rollbar example](https://github.com/kataras/iris/blob/master/_examples/logging/rollbar/main.go).
 
 - New builtin [requestid](https://github.com/kataras/iris/tree/master/middleware/requestid) middleware.
 
 - New builtin [JWT](https://github.com/kataras/iris/tree/master/middleware/jwt) middleware based on [square/go-jose](https://github.com/square/go-jose) featured with optional encryption to set claims with sensitive data when necessary.
 
-- `Context.ReadForm` now can return an `iris.ErrEmptyForm` instead of `nil` when the new `Configuration.FireEmptyFormError`  is true  (or `iris.WithEmptyFormError`) on missing form body to read from.
+- New `iris.RouteOverlap` route registration rule. `Party.SetRegisterRule(iris.RouteOverlap)` to allow overlapping across multiple routes for the same request subdomain, method, path. See [1536#issuecomment-643719922](https://github.com/kataras/iris/issues/1536#issuecomment-643719922). This allows two or more **MVC Controllers** to listen on the same path based on one or more registered dependencies (see [_examples/mvc/authenticated-controller](https://github.com/kataras/iris/tree/master/_examples/mvc/authenticated-controller)).
+
+- `Context.ReadForm` now can return an `iris.ErrEmptyForm` instead of `nil` when the new `Configuration.FireEmptyFormError` is true  (when `iris.WithEmptyFormError` is set) on missing form body to read from.
 
 - `Configuration.EnablePathIntelligence | iris.WithPathIntelligence` to enable path intelligence automatic path redirection on the most closest path (if any), [example]((https://github.com/kataras/iris/blob/master/_examples/routing/intelligence/main.go)
 
@@ -411,20 +470,27 @@ Other Improvements:
 
 New Package-level Variables:
 
+- `iris.DirListRichOptions` to pass on `iris.DirListRich` method.
+- `iris.DirListRich` to override the default look and feel if the `DirOptions.ShowList` was set to true, can be passed to `DirOptions.DirList` field.
+- `DirOptions.PushTargets` for http/2 push on index [*](https://github.com/kataras/iris/tree/master/_examples/file-server/http2push/main.go).
+- `iris.Compression` middleware to compress responses and decode compressed request data respectfully.
 - `iris.B, KB, MB, GB, TB, PB, EB` for byte units.
 - `TLSNoRedirect` to disable automatic "http://" to "https://" redirections (see below)
 - `CookieAllowReclaim`, `CookieAllowSubdomains`, `CookieSameSite`, `CookieSecure` and `CookieEncoding` to bring previously sessions-only features to all cookies in the request.
 
 New Context Methods:
 
+- `Context.SetErr(error)` and `Context.GetErr() error` helpers
+- `Context.CompressWriter(bool) error` and `Context.CompressReader(bool) error`
+- `Context.Clone() Context` returns a copy of the Context.
+- `Context.IsCanceled() bool` reports whether the request has been canceled by the client.
 - `Context.IsSSL() bool` reports whether the request is under HTTPS SSL (New `Configuration.SSLProxyHeaders` and `HostProxyHeaders` fields too).
-- `Context.GzipReader(enable bool)` method and `iris.GzipReader` middleware to enable future request read body calls to decompress data using gzip, [example](_examples/request-body/read-gzip).
-- `Context.RegisterDependency(v interface{})` and `Context.RemoveDependency(typ reflect.Type)` to register/remove struct dependencies on serve-time through a middleware.
+- `Context.CompressReader(enable bool)` method and `iris.CompressReader` middleware to enable future request read body calls to decompress data, [example](_examples/compression/main.go).
+- `Context.RegisterDependency(v interface{})` and `Context.UnregisterDependency(typ reflect.Type)` to register/remove struct dependencies on serve-time through a middleware.
 - `Context.SetID(id interface{})` and `Context.GetID() interface{}` added to register a custom unique indetifier to the Context, if necessary.
 - `Context.GetDomain() string` returns the domain.
 - `Context.AddCookieOptions(...CookieOption)` adds options for `SetCookie`, `SetCookieKV, UpsertCookie` and `RemoveCookie` methods for the current request.
 - `Context.ClearCookieOptions()` clears any cookie options registered through `AddCookieOptions`.
-- `Context.SetVersion(constraint string)` force-sets an [API Version](https://github.com/kataras/iris/wiki/API-versioning)
 - `Context.SetLanguage(langCode string)` force-sets a language code from inside a middleare, similar to the `app.I18n.ExtractFunc`
 - `Context.ServeContentWithRate`, `ServeFileWithRate` and `SendFileWithRate` methods to throttle the "download" speed of the client
 - `Context.IsHTTP2() bool` reports whether the protocol version for incoming request was HTTP/2
@@ -435,31 +501,40 @@ New Context Methods:
 - `Context.StopWithError(int, error)` stops the handlers chain, writes thre status code and the error's message
 - `Context.StopWithJSON(int, interface{})` stops the handlers chain, writes the status code and sends a JSON response
 - `Context.StopWithProblem(int, iris.Problem)` stops the handlers, writes the status code and sends an `application/problem+json` response
-- `Context.Protobuf(proto.Message)` sends protobuf to the client
+- `Context.Protobuf(proto.Message)` sends protobuf to the client (note that the `Context.JSON` is able to send protobuf as JSON)
 - `Context.MsgPack(interface{})` sends msgpack format data to the client
 - `Context.ReadProtobuf(ptr)` binds request body to a proto message
+- `Context.ReadJSONProtobuf(ptr, ...options)` binds JSON request body to a proto message
 - `Context.ReadMsgPack(ptr)` binds request body of a msgpack format to a struct
 - `Context.ReadBody(ptr)` binds the request body to the "ptr" depending on the request's Method and Content-Type
-- `Context.Defer(Handler)` works like `Party.Done` but for the request life-cycle instead
 - `Context.ReflectValue() []reflect.Value` stores and returns the `[]reflect.ValueOf(ctx)`
 - `Context.Controller() reflect.Value` returns the current MVC Controller value.
 
 Breaking Changes:
 
-
-- Fixed handler's error response not be respected when response recorder or gzip writer was used instead of the common writer. Fixes [#1531](https://github.com/kataras/iris/issues/1531). It contains a **BREAKING CHANGE** of: the new `Configuration.ResetOnFireErrorCode` field should be set **to true** in order to behave as it used before this update (to reset the contents on recorder or gzip writer).
+- `ctx.Gzip(boolean)` replaced with `ctx.CompressWriter(boolean) error`.
+- `ctx.GzipReader(boolean) error` replaced with `ctx.CompressReader(boolean) error`.
+- `iris.Gzip` and `iris.GzipReader` replaced with `iris.Compression` (middleware).
+- `ctx.ClientSupportsGzip() bool` replaced with `ctx.ClientSupportsEncoding("gzip", "br" ...) bool`.
+- `ctx.GzipResponseWriter()` is **removed**.
+- `Party.HandleDir/iris.FileServer` now accepts a `http.FileSystem` instead of a string and returns a list of `[]*Route` (GET and HEAD) instead of GET only. Write: `app.HandleDir("/", iris.Dir("./assets"))` instead of `app.HandleDir("/", "./assets")` and `DirOptions.Asset, AssetNames, AssetInfo` removed, use `go-bindata -fs [..]` and `app.HandleDir("/", AssetFile())` instead.
+- `Context.OnClose` and `Context.OnCloseConnection` now both accept an `iris.Handler` instead of a simple `func()` as their callback.
+- `Context.StreamWriter(writer func(w io.Writer) bool)` changed to `StreamWriter(writer func(w io.Writer) error) error` and it's now the `Context.Request().Context().Done()` channel that is used to receive any close connection/manual cancel signals, instead of the deprecated `ResponseWriter().CloseNotify()` one. Same for the `Context.OnClose` and `Context.OnCloseConnection` methods.
+- Fixed handler's error response not be respected when response recorder was used instead of the common writer. Fixes [#1531](https://github.com/kataras/iris/issues/1531). It contains a **BREAKING CHANGE** of: the new `Configuration.ResetOnFireErrorCode` field should be set **to true** in order to behave as it used before this update (to reset the contents on recorder).
 - `Context.String()` (rarely used by end-developers) it does not return a unique string anymore, to achieve the old representation you must call the new `Context.SetID` method first.
 - `iris.CookieEncode` and `CookieDecode` are replaced with the `iris.CookieEncoding`.
 - `sessions#Config.Encode` and `Decode` are removed in favor of (the existing) `Encoding` field.
 - `versioning.GetVersion` now returns an empty string if version wasn't found.
 - Change the MIME type of `Javascript .js` and `JSONP` as the HTML specification now recommends to `"text/javascript"` instead of the obselete `"application/javascript"`. This change was pushed to the `Go` language itself as well. See <https://go-review.googlesource.com/c/go/+/186927/>.
-- Remove the last input argument of `enableGzipCompression` in `Context.ServeContent`, `ServeFile` methods. This was deprecated a few versions ago. A middleware (`app.Use(iris.Gzip)`) or a prior call to `Context.Gzip(true)` will enable gzip compression. Also these two methods and `Context.SendFile` one now support `Content-Range` and `Accept-Ranges` correctly out of the box (`net/http` had a bug, which is now fixed).
+- Remove the last input argument of `enableGzipCompression` in `Context.ServeContent`, `ServeFile` methods. This was deprecated a few versions ago. A middleware (`app.Use(iris.CompressWriter)`) or a prior call to `Context.CompressWriter(true)` will enable compression. Also these two methods and `Context.SendFile` one now support `Content-Range` and `Accept-Ranges` correctly out of the box (`net/http` had a bug, which is now fixed).
 - `Context.ServeContent` no longer returns an error, see `ServeContentWithRate`, `ServeFileWithRate` and `SendFileWithRate` new methods too.
 - `route.Trace() string` changed to `route.Trace(w io.Writer)`, to achieve the same result just pass a `bytes.Buffer`
 - `var mvc.AutoBinding` removed as the default behavior now resolves such dependencies automatically (see [[FEATURE REQUEST] MVC serving gRPC-compatible controller](https://github.com/kataras/iris/issues/1449)).
 - `mvc#Application.SortByNumMethods()` removed as the default behavior now binds the "thinnest"  empty `interface{}` automatically (see [MVC: service injecting fails](https://github.com/kataras/iris/issues/1343)).
 - `mvc#BeforeActivation.Dependencies().Add` should be replaced with `mvc#BeforeActivation.Dependencies().Register` instead
 - **REMOVE** the `kataras/iris/v12/typescript` package in favor of the new [iris-cli](https://github.com/kataras/iris-cli). Also, the alm typescript online editor was removed as it is deprecated by its author, please consider using the [designtsx](https://designtsx.com/) instead.
+
+There is a breaking change on the type alias of `iris.Context` which now points to the `*context.Context` instead of the `context.Context` interface. The **interface has been removed** and the ability to **override** the Context **is not** available any more. When we added the ability from end-developers to override the Context years ago, we have never imagine that we will ever had such a featured Context with more than 4000 lines of code. As of Iris 2020, it is difficult and un-productive from an end-developer to override the Iris Context, and as far as we know, nobody uses this feature anymore because of that exact reason. Beside the overriding feature support end, if you still use the `context.Context` instead of `iris.Context`, it's the time to do it: please find-and-replace to `iris.Context` as wikis, book and all examples shows for the past 3 years. For the 99.9% of the users there is no a single breaking change, you already using `iris.Context` so you are in the "safe zone".
 
 # Su, 16 February 2020 | v12.1.8
 

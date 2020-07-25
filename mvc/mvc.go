@@ -146,13 +146,25 @@ func (app *Application) Register(dependencies ...interface{}) *Application {
 	return app
 }
 
-// Option is an interface which does contain a single `Apply` method that accepts
-// a `ControllerActivator`. It can be passed on `Application.Handle` method to
-// mdoify the behavior right after the `BeforeActivation` state.
-//
-// See `GRPC` package-level structure too.
-type Option interface {
-	Apply(*ControllerActivator)
+type (
+	// Option is an interface which does contain a single `Apply` method that accepts
+	// a `ControllerActivator`. It can be passed on `Application.Handle` method to
+	// mdoify the behavior right after the `BeforeActivation` state.
+	//
+	// See `GRPC` package-level structure
+	// and `Version` package-level function too.
+	Option interface {
+		Apply(*ControllerActivator)
+	}
+
+	// OptionFunc is the functional type of `Option`.
+	// Read `Option` docs.
+	OptionFunc func(*ControllerActivator)
+)
+
+// Apply completes the `Option` interface.
+func (opt OptionFunc) Apply(c *ControllerActivator) {
+	opt(c)
 }
 
 // Handle serves a controller for the current mvc application's Router.
@@ -276,9 +288,9 @@ func (app *Application) handle(controller interface{}, options ...Option) *Contr
 // HandleError registers a `hero.ErrorHandlerFunc` which will be fired when
 // application's controllers' functions returns an non-nil error.
 // Each controller can override it by implementing the `hero.ErrorHandler`.
-func (app *Application) HandleError(handler func(ctx context.Context, err error)) *Application {
+func (app *Application) HandleError(handler func(ctx *context.Context, err error)) *Application {
 	errorHandler := hero.ErrorHandlerFunc(handler)
-	app.container.GetErrorHandler = func(context.Context) hero.ErrorHandler {
+	app.container.GetErrorHandler = func(*context.Context) hero.ErrorHandler {
 		return errorHandler
 	}
 	return app
